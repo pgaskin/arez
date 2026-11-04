@@ -1,0 +1,110 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.arch }}${{ matrix.goexperiment && ', simd' || '' }})
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        goexperiment: ['', simd]
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      GOEXPERIMENT: ${{ matrix.goexperiment }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.mod
+      - run: lscpu # since it affects which amd64 simd implementation is used
+      - run: go mod download
+      - run: go mod verify
+      - run: gofmt -d .
+      - run: go vet ./...
+      - run: go generate ./... && git diff --exit-code # ensure generated code is up-to-date
+      - run: go test -v -cover -coverprofile=cover.out ./...
+      - run: go tool cover -func=cover.out && rm cover.out
+      - run: REZ_SIMD=avx512 go test -count=1 ./... # no VBMI
+        if: ${{ matrix.arch == 'amd64' && matrix.goexperiment == 'simd' }}
+      - run: REZ_SIMD=avx2 go test -count=1 ./... # no AVX-512
+        if: ${{ matrix.arch == 'amd64' && matrix.goexperiment == 'simd' }}
+      - run: REZ_SIMD=none go test -count=1 ./... # fallback scalers
+        if: ${{ matrix.arch == 'amd64' && matrix.goexperiment == 'simd' }}
+      - run: go test -count=1 -arez.guard=back ./...
+      - run: go test -count=1 -arez.guard=front ./...
+
+# race:
+#   name: Race (amd64${{ matrix.goexperiment && ', simd' || '' }})
+#   strategy:
+#     fail-fast: false
+#     matrix:
+#       goexperiment: ['', simd]
+#   runs-on: ubuntu-latest
+#   env:
+#     GOEXPERIMENT: ${{ matrix.goexperiment }}
+#   steps:
+#     - uses: actions/checkout@v7
+#     - uses: actions/setup-go@v7
+#       with:
+#         go-version-file: go.mod
+#         cache-dependency-path: go.mod
+#     - run: go test -race -count=1 -timeout=30m ./...
+
+  wasm:
+    name: Test (wasm on ${{ matrix.arch }}${{ matrix.goexperiment && ', simd' || '' }})
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        goexperiment: ['', simd]
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      GOEXPERIMENT: ${{ matrix.goexperiment }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.mod
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+      - run: go test -short -exec "env -i PATH=$PATH $(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./...
+        env:
+          GOOS: js
+          GOARCH: wasm
+
+  api:
+    name: API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.mod
+      - run: GONOPROXY=github.com/pgaskin/arez go run golang.org/x/exp/cmd/gorelease@v0.0.0-20261014143641-f0251eb4aa3e -base=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo none)
