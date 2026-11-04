@@ -1,24 +1,29 @@
-// Copyright 2013 Benoît Amiaux. All rights reserved.
-// Use of this source code is governed by a MIT-style
-// license that can be found in the LICENSE file.
+// Copyright 2013 Benoît Amiaux. All rights reserved. Use of this source code is
+// governed by a MIT-style license that can be found in the LICENSE file.
 
-package rez
+package arez
 
 import (
 	"math"
 )
 
-// Filter is an interpolation filter interface
-// It is used to compute weights for every input pixel
+// Filter is an interpolation filter, which gives the weights of the input
+// pixels around an output pixel. Filters must be safe for concurrent use.
 type Filter interface {
-	Taps() int
+	// Support returns the radius of the filter.
+	Support() int
+	// Name returns the name of the filter.
 	Name() string
+	// Get returns the weight of an input pixel at the distance dx from the
+	// center of an output pixel, in input pixels when upscaling and in output
+	// pixels when downscaling. The weights of an output pixel are normalized by
+	// their sum. When dx >= Support(), the result is zero.
 	Get(dx float64) float64
 }
 
 type bilinear struct{}
 
-func (bilinear) Taps() int    { return 1 }
+func (bilinear) Support() int { return 1 }
 func (bilinear) Name() string { return "bilinear" }
 
 func (bilinear) Get(x float64) float64 {
@@ -28,8 +33,8 @@ func (bilinear) Get(x float64) float64 {
 	return 0
 }
 
-// NewBilinearFilter exports a bilinear filter
-func NewBilinearFilter() Filter {
+// Bilinear returns a bilinear filter.
+func Bilinear() Filter {
 	return bilinear{}
 }
 
@@ -37,11 +42,11 @@ type bicubic struct {
 	a, b, c, d, e, f, g float64
 }
 
-func (bicubic) Taps() int {
+func (*bicubic) Support() int {
 	return 2
 }
 
-func (bicubic) Name() string {
+func (*bicubic) Name() string {
 	return "bicubic"
 }
 
@@ -54,10 +59,10 @@ func (f *bicubic) Get(x float64) float64 {
 	return 0
 }
 
-// NewCustomBicubicFilter exports a bicubic filter where <b> and <c> can be
-// customized.
-// For example, the Mitchell-Netravali bicubic filter is b = c = 1/3
-func NewCustomBicubicFilter(b, c float64) Filter {
+// CustomBicubic returns the Mitchell-Netravali bicubic filter of the parameters
+// b and c. For example, b = c = 1/3 is the filter Mitchell and Netravali
+// recommend, and b = 0, c = 0.5 the Catmull-Rom spline of [Bicubic].
+func CustomBicubic(b, c float64) Filter {
 	f := &bicubic{}
 	f.a = 1 - b/3
 	f.b = -3 + 2*b + c
@@ -69,16 +74,16 @@ func NewCustomBicubicFilter(b, c float64) Filter {
 	return f
 }
 
-// NewBicubicFilter exports a classic bicubic filter
-func NewBicubicFilter() Filter {
-	return NewCustomBicubicFilter(0, 0.5)
+// Bicubic returns the Catmull-Rom bicubic filter, CustomBicubic(0, 0.5).
+func Bicubic() Filter {
+	return CustomBicubic(0, 0.5)
 }
 
 type lanczos struct {
 	alpha float64
 }
 
-func (f lanczos) Taps() int {
+func (f lanczos) Support() int {
 	return int(f.alpha)
 }
 
@@ -97,7 +102,8 @@ func (f lanczos) Get(x float64) float64 {
 	return math.Sin(b) * math.Sin(c) / (b * c)
 }
 
-// NewLanczosFilter exports a lanczos filter where <alpha> is filter size
-func NewLanczosFilter(alpha int) Filter {
+// Lanczos returns a Lanczos filter with a support of alpha pixels, commonly 2
+// or 3.
+func Lanczos(alpha int) Filter {
 	return lanczos{alpha: float64(alpha)}
 }
