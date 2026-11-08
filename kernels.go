@@ -32,12 +32,7 @@ func clip(v, lo, hi int) int {
 
 func makeDoubleKernel(cfg *ResizerConfig, filter Filter, field, idx uint) ([]int, []float64, []float64, int, int) {
 	scale := float64(cfg.Output) / float64(cfg.Input)
-	step := min(1, scale)
-	support := filter.Support() / step
-	pf, isPixel := filter.(pixelFilter)
-	if isPixel {
-		support = pf.pixelSupport(scale)
-	}
+	support := filter.Support(scale)
 	taps := int(min(math.Ceil(support), float64(cfg.Input))) * 2
 	taps = min(taps, (cfg.Input>>field)&^1)
 	offsets := make([]int, cfg.Output)
@@ -48,7 +43,6 @@ func makeDoubleKernel(cfg *ResizerConfig, filter Filter, field, idx uint) ([]int
 	// interlaced resize see only one field but still use full res pixel positions
 	ftaps := taps << field
 	size := (cfg.Output + int(field*(1-idx))) >> field
-	step /= float64(1 + field)
 	xmid += xstep * float64(field*idx)
 	for i := range size {
 		left := int(math.Ceil(xmid)) - ftaps>>1
@@ -59,12 +53,7 @@ func makeDoubleKernel(cfg *ResizerConfig, filter Filter, field, idx uint) ([]int
 			if field != 0 && idx^uint(src&1) != 0 {
 				continue
 			}
-			var weight float64
-			if isPixel {
-				weight = pf.pixelWeight((xmid-float64(src))/float64(1+field), scale)
-			} else {
-				weight = filter.Get(math.Abs(xmid-float64(src)) * step)
-			}
+			weight := filter.Weight((xmid-float64(src))/float64(1+field), scale)
 			src = clip(src, x, cfg.Input-1) - x
 			src >>= field
 			weights[i*taps+src] += weight
@@ -122,7 +111,7 @@ func makeIntegerKernel(taps, size int, cof, sums []float64, pos []int, field, id
 // horizontal ones are bytes, vertical ones are steps between output rows, both
 // below the input size checkResize bounds.
 func makeKernel(cfg *ResizerConfig, filter Filter, idx uint) (kernel, error) {
-	if s := filter.Support(); !(s > 0) || math.IsInf(s, 1) {
+	if s := filter.Support(float64(cfg.Output) / float64(cfg.Input)); !(s > 0) || math.IsInf(s, 1) {
 		return kernel{}, fmt.Errorf("%w: %v has a support of %v", ErrInvalidFilter, filterString(filter), s)
 	}
 	field := bin(cfg.Interlaced)

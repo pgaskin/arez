@@ -11,41 +11,73 @@ import (
 )
 
 // Filter is an interpolation filter, which gives the weights of the input
-// pixels around an output pixel. Filters must be safe for concurrent use.
+// pixels around an output pixel for a resize by scale (output/input). Filters
+// must be safe for concurrent use.
+//
+// Distances are in input pixels, or in rows of a field for interlaced resizes.
 type Filter interface {
 	// Support returns the radius of the filter, which must be positive and
 	// finite.
-	Support() float64
-	// Get returns the weight of an input pixel at the distance dx from the
-	// center of an output pixel, in input pixels when upscaling and in output
-	// pixels when downscaling. The weights of an output pixel are normalized by
-	// their sum. When dx >= Support(), the result is zero.
-	Get(dx float64) float64
+	Support(scale float64) float64
+	// Weight returns the weight of the input pixel at the signed distance dx
+	// from the center of an output pixel (the output center minus the input
+	// center). The weights of an output pixel are normalized by their sum. The
+	// result must be zero unless -Support(scale) < dx <= Support(scale).
+	Weight(dx, scale float64) float64
 }
 
-// pixelFilter is implemented by filters whose weights depend on the scale of
-// the resize.
-//
-// TODO: should probably make Filter methods take a scale param or something
-// like that later
-type pixelFilter interface {
-	pixelSupport(scale float64) float64
-	pixelWeight(dx, scale float64) float64
+type kernelFilter struct {
+	support float64
+	k       func(dx float64) float64
+}
+
+func (f *kernelFilter) Support(scale float64) float64 {
+	return kernelSupport(f.support, scale)
+}
+
+func (f *kernelFilter) Weight(dx, scale float64) float64 {
+	return kernelWeight(f.k, f.support, dx, scale)
+}
+
+func (f *kernelFilter) String() string {
+	return fmt.Sprintf("kernel(support=%g)", f.support)
+}
+
+// Kernel returns a filter for a symmetric convolution kernel with the specified
+// support radius, which is called with distances from 0 to support. The kernel
+// is stretched over the output pixels when downscaling.
+func Kernel(support float64, k func(dx float64) float64) Filter {
+	return &kernelFilter{support, k}
+}
+
+func kernelSupport(support, scale float64) float64 {
+	return support / min(1, scale)
+}
+
+func kernelWeight(k func(float64) float64, support, dx, scale float64) float64 {
+	if x := math.Abs(dx) * min(1, scale); x < support {
+		return k(x)
+	}
+	return 0
 }
 
 var pkg, _, _ = strings.Cut(reflect.TypeFor[bilinear]().String(), ".") // arez
 
 type bilinear struct{}
 
-func (bilinear) Support() float64 { return 1 }
 func (bilinear) String() string   { return "bilinear" }
 func (bilinear) GoString() string { return pkg + ".Bilinear()" }
 
-func (bilinear) Get(x float64) float64 {
-	if x < 1 {
-		return 1 - x
-	}
-	return 0
+func (bilinear) Support(scale float64) float64 {
+	return kernelSupport(1, scale)
+}
+
+func (f bilinear) Weight(dx, scale float64) float64 {
+	return kernelWeight(f.get, 1, dx, scale)
+}
+
+func (bilinear) get(x float64) float64 {
+	return 1 - x
 }
 
 // Bilinear returns a bilinear filter.
@@ -56,10 +88,6 @@ func Bilinear() Filter {
 type bicubic struct {
 	a, b, c, d, e, f, g float64 // polynomial coefficients
 	pb, pc              float64 // parameters
-}
-
-func (*bicubic) Support() float64 {
-	return 2
 }
 
 func (f *bicubic) String() string {
@@ -73,13 +101,19 @@ func (f *bicubic) GoString() string {
 	return fmt.Sprintf("%s.CustomBicubic(%g, %g)", pkg, f.pb, f.pc)
 }
 
-func (f *bicubic) Get(x float64) float64 {
+func (*bicubic) Support(scale float64) float64 {
+	return kernelSupport(2, scale)
+}
+
+func (f *bicubic) Weight(dx, scale float64) float64 {
+	return kernelWeight(f.get, 2, dx, scale)
+}
+
+func (f *bicubic) get(x float64) float64 {
 	if x < 1 {
 		return f.a + x*x*(f.b+x*f.c)
-	} else if x < 2 {
-		return f.d + x*(f.e+x*(f.f+x*f.g))
 	}
-	return 0
+	return f.d + x*(f.e+x*(f.f+x*f.g))
 }
 
 // CustomBicubic returns the Mitchell-Netravali bicubic filter of the parameters
@@ -106,10 +140,6 @@ type lanczos struct {
 	alpha float64
 }
 
-func (f lanczos) Support() float64 {
-	return f.alpha
-}
-
 func (f lanczos) String() string {
 	return fmt.Sprintf("lanczos(a=%g)", f.alpha)
 }
@@ -118,10 +148,16 @@ func (f lanczos) GoString() string {
 	return fmt.Sprintf("%s.Lanczos(%g)", pkg, f.alpha)
 }
 
-func (f lanczos) Get(x float64) float64 {
-	if x >= f.alpha {
-		return 0
-	} else if x == 0 {
+func (f lanczos) Support(scale float64) float64 {
+	return kernelSupport(f.alpha, scale)
+}
+
+func (f lanczos) Weight(dx, scale float64) float64 {
+	return kernelWeight(f.get, f.alpha, dx, scale)
+}
+
+func (f lanczos) get(x float64) float64 {
+	if x == 0 {
 		return 1
 	}
 	b := x * math.Pi
@@ -137,20 +173,14 @@ func Lanczos(alpha float64) Filter {
 
 type nearest struct{}
 
-func (nearest) Support() float64 { return 0.5 }
 func (nearest) String() string   { return "nearest" }
 func (nearest) GoString() string { return pkg + ".Nearest()" }
 
-func (nearest) Get(x float64) float64 {
-	if x < 0.5 {
-		return 1
-	}
-	return 0
+func (nearest) Support(float64) float64 {
+	return 0.5
 }
 
-func (nearest) pixelSupport(float64) float64 { return 0.5 }
-
-func (nearest) pixelWeight(dx, _ float64) float64 {
+func (nearest) Weight(dx, _ float64) float64 {
 	if dx > -0.5 && dx <= 0.5 {
 		return 1
 	}
@@ -158,30 +188,20 @@ func (nearest) pixelWeight(dx, _ float64) float64 {
 }
 
 // Nearest returns a nearest-neighbor filter.
-//
-// Note: The Get/Support functions on this filter are not used and will result
-// in suboptimal results. The returned filter currently implements a private
-// interface for scale-aware filters.
 func Nearest() Filter {
 	return nearest{}
 }
 
 type box struct{}
 
-func (box) Support() float64 { return 0.5 }
 func (box) String() string   { return "box" }
 func (box) GoString() string { return pkg + ".Box()" }
 
-func (box) Get(x float64) float64 {
-	if x < 0.5 {
-		return 1
-	}
-	return 0
+func (box) Support(scale float64) float64 {
+	return 0.5/scale + 0.5
 }
 
-func (box) pixelSupport(scale float64) float64 { return 0.5/scale + 0.5 }
-
-func (box) pixelWeight(dx, scale float64) float64 {
+func (box) Weight(dx, scale float64) float64 {
 	// overlap of the output pixel, 1/scale input pixels wide, and the input
 	// pixel
 	w, d := 0.5/scale, math.Abs(dx)
@@ -189,10 +209,6 @@ func (box) pixelWeight(dx, scale float64) float64 {
 }
 
 // Box returns a box filter.
-//
-// Note: The Get/Support functions on this filter are not used and will result
-// in suboptimal results. The returned filter currently implements a private
-// interface for scale-aware filters.
 func Box() Filter {
 	return box{}
 }

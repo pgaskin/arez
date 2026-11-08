@@ -9,15 +9,24 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"math/rand"
 	"runtime"
 	"testing"
 )
 
 func TestFilterSupport(t *testing.T) {
 	for _, f := range append(filters, Lanczos(4), Lanczos(2.5), CustomBicubic(1.0/3, 1.0/3)) {
-		support := f.Support()
-		expect(t, f.Get(support), 0)
-		expect(t, math.Abs(f.Get(support-0.25)) > 1e-3, true)
+		support := f.Support(1)
+		expect(t, f.Weight(support, 1), 0)
+		expect(t, f.Weight(-support, 1), 0)
+		expect(t, math.Abs(f.Weight(support-0.25, 1)) > 1e-3, true)
+		// stretched over the output pixels when downscaling
+		expect(t, f.Support(2), support)
+		expect(t, f.Support(0.5), 2*support)
+		for _, dx := range []float64{0, 0.25, 0.5, 1.25, support - 0.25} {
+			expect(t, f.Weight(dx, 2), f.Weight(dx, 1))
+			expect(t, f.Weight(-2*dx, 0.5), f.Weight(dx, 1))
+		}
 		for _, tt := range []struct{ input, output int }{{100, 200}, {100, 100}, {300, 100}, {250, 100}, {1920, 640}} {
 			k, err := makeKernel(&ResizerConfig{Input: tt.input, Output: tt.output, Pack: 1, Depth: 8}, f, 0)
 			expect(t, err, nil)
@@ -25,9 +34,37 @@ func TestFilterSupport(t *testing.T) {
 			expect(t, k.size, 2*int(math.Ceil(r*support)))
 		}
 	}
-	expect(t, Bilinear().Support(), 1)
-	expect(t, Bicubic().Support(), 2)
-	expect(t, Lanczos(3).Support(), 3)
+	expect(t, Bilinear().Support(1), 1)
+	expect(t, Bicubic().Support(1), 2)
+	expect(t, Lanczos(3).Support(1), 3)
+}
+
+// TestKernel checks that Kernel filters are stretched like the built-in ones
+// and are zero outside their support.
+func TestKernel(t *testing.T) {
+	linear := Kernel(1, func(x float64) float64 { return 1 - x })
+	expect(t, filterString(linear), "kernel(support=1)")
+	rng := rand.New(rand.NewSource(1))
+	for _, s := range []struct{ input, output int }{{8, 16}, {16, 8}, {100, 37}, {37, 100}, {64, 3}} {
+		src := make([]byte, s.input*3)
+		rng.Read(src)
+		var outs [2][]byte
+		for i, f := range []Filter{Bilinear(), linear} {
+			r, err := NewResizer(&ResizerConfig{Input: s.input, Output: s.output}, f)
+			expect(t, err, nil)
+			outs[i] = make([]byte, s.output*3)
+			r.Resize(outs[i], src, s.input, 3, s.output, s.input)
+		}
+		if !bytes.Equal(outs[0], outs[1]) {
+			t.Errorf("%v to %v: got %v, want %v", s.input, s.output, outs[1], outs[0])
+		}
+	}
+	one := Kernel(1.5, func(float64) float64 { return 1 })
+	expect(t, one.Weight(1.25, 1), 1)
+	expect(t, one.Weight(-1.25, 1), 1)
+	expect(t, one.Weight(1.5, 1), 0)
+	expect(t, one.Weight(2.75, 0.5), 1)
+	expect(t, one.Weight(3, 0.5), 0)
 }
 
 func TestFilterString(t *testing.T) {
@@ -110,17 +147,17 @@ func TestFractionalSupport(t *testing.T) {
 
 type constFilter struct{ weight float64 }
 
-func (constFilter) Support() float64      { return 1 }
-func (f constFilter) Get(float64) float64 { return f.weight }
+func (constFilter) Support(float64) float64           { return 1 }
+func (f constFilter) Weight(float64, float64) float64 { return f.weight }
 
 // spikeFilter gives a large weight to the nearest pixel and a nearly opposite
 // one to the others, so the weights sum to a small fraction of the largest and
 // the fixed point coefficients overflow.
 type spikeFilter struct{}
 
-func (spikeFilter) Support() float64 { return 1 }
-func (spikeFilter) Get(x float64) float64 {
-	if x < 0.5 {
+func (spikeFilter) Support(float64) float64 { return 1 }
+func (spikeFilter) Weight(dx, _ float64) float64 {
+	if math.Abs(dx) < 0.5 {
 		return 1000
 	}
 	return -999
@@ -131,8 +168,8 @@ func (spikeFilter) Get(x float64) float64 {
 // size.
 type supportFilter struct{ support float64 }
 
-func (f supportFilter) Support() float64  { return f.support }
-func (supportFilter) Get(float64) float64 { return 1 }
+func (f supportFilter) Support(scale float64) float64 { return f.support / min(1, scale) }
+func (supportFilter) Weight(float64, float64) float64 { return 1 }
 
 // TestHugeSupport resizes with filters whose tap counts overflow int before
 // they are clamped to the input.
@@ -162,8 +199,8 @@ func TestHugeSupport(t *testing.T) {
 
 type panicFilter struct{ value string }
 
-func (panicFilter) Support() float64      { return 1 }
-func (f panicFilter) Get(float64) float64 { panic(f.value) }
+func (panicFilter) Support(float64) float64           { return 1 }
+func (f panicFilter) Weight(float64, float64) float64 { panic(f.value) }
 
 func TestPanics(t *testing.T) {
 	src := newImage(t, ycbcr(image.YCbCrSubsampleRatio420), image.Rect(0, 0, 32, 32))
