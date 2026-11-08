@@ -356,6 +356,11 @@ var testImageTypes = []struct {
 	{"YCbCr410", func(r image.Rectangle) image.Image { return image.NewYCbCr(r, image.YCbCrSubsampleRatio410) }},
 	{"YCbCr440", func(r image.Rectangle) image.Image { return image.NewYCbCr(r, image.YCbCrSubsampleRatio440) }},
 	{"NYCbCrA420", func(r image.Rectangle) image.Image { return image.NewNYCbCrA(r, image.YCbCrSubsampleRatio420) }},
+	{"NYCbCrA422", func(r image.Rectangle) image.Image { return image.NewNYCbCrA(r, image.YCbCrSubsampleRatio422) }},
+	{"NYCbCrA444", func(r image.Rectangle) image.Image { return image.NewNYCbCrA(r, image.YCbCrSubsampleRatio444) }},
+	{"NYCbCrA411", func(r image.Rectangle) image.Image { return image.NewNYCbCrA(r, image.YCbCrSubsampleRatio411) }},
+	{"NYCbCrA410", func(r image.Rectangle) image.Image { return image.NewNYCbCrA(r, image.YCbCrSubsampleRatio410) }},
+	{"NYCbCrA440", func(r image.Rectangle) image.Image { return image.NewNYCbCrA(r, image.YCbCrSubsampleRatio440) }},
 }
 
 func fillImage(rng *rand.Rand, img image.Image) {

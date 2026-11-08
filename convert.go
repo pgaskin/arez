@@ -194,6 +194,34 @@ func chromaSize(lo, hi, n int) int {
 	return (hi+n-1)/n - lo/n
 }
 
+// subsampling returns the number of luma pixels per chroma sample of r in each
+// direction.
+func subsampling(r ChromaRatio) (x, y int) {
+	switch r {
+	case Ratio410:
+		return 4, 2
+	case Ratio411:
+		return 4, 1
+	case Ratio420:
+		return 2, 2
+	case Ratio422:
+		return 2, 1
+	case Ratio440:
+		return 1, 2
+	}
+	return 1, 1
+}
+
+// sameSize reports whether every plane of d has the size of the one of o.
+func sameSize(d, o *Descriptor) bool {
+	for i := range d.Planes {
+		if d.Width(i) != o.Width(i) || d.Height(i) != o.Height(i) {
+			return false
+		}
+	}
+	return true
+}
+
 // ConverterConfig contains configuration for a [Converter].
 //
 // Additional options may be added in future versions, but the zero value will
@@ -207,10 +235,16 @@ type ConverterConfig struct {
 }
 
 const (
-	maxPlanes  = 4
-	alphaPlane = 3             // the alpha plane of NYCbCrA, at the luma resolution
-	preScratch = maxPlanes     // the premultiplied input
-	outScratch = maxPlanes + 1 // the premultiplied 16-bit output of an 8-bit conversion
+	maxPlanes   = 4
+	alphaPlane  = 3 // the alpha plane of NYCbCrA, at the luma resolution
+	chromaAlpha = 4 // the premultiplied NYCbCrA plane of the alpha of the chroma samples, at the chroma resolution
+
+	// The scratch planes are the intermediate planes of two pass resizes (with
+	// the one of chromaAlpha), then the premultiplied 16-bit planes of the
+	// input, and of the output of an 8-bit conversion.
+	preScratch = chromaAlpha + 1
+	outScratch = preScratch + chromaAlpha + 1
+	numScratch = outScratch + chromaAlpha + 1
 )
 
 type plane struct {
@@ -229,10 +263,11 @@ type Converter struct {
 	cfg     ConverterConfig
 	wrez    [maxPlanes]*Resizer
 	hrez    [maxPlanes]*Resizer
-	scratch [maxPlanes + 2]plane // Pitch is 0 for unused planes
-	size    int                  // bytes of all scratch planes
-	pool    sync.Pool            // []byte of size bytes
-	premul  bool                 // PremultiplyAlpha
+	scratch [numScratch]plane // Pitch is 0 for unused planes
+	size    int               // bytes of all scratch planes
+	pool    sync.Pool         // []byte of size bytes
+	premul  bool              // PremultiplyAlpha, if any plane is resized
+	chroma  chromaFootprint   // of the input, for premultiplied NYCbCrA
 }
 
 func toInterlacedString(interlaced bool) string {
@@ -303,17 +338,31 @@ func NewConverter(cfg *ConverterConfig, filter Filter) (*Converter, error) {
 		cfg.Threads = runtime.GOMAXPROCS(0)
 	}
 	depth := cfg.Input.depth()
+	planar := cfg.Input.Planes == maxPlanes
 	if cfg.PremultiplyAlpha {
-		if cfg.Input.Pack != 4 || cfg.Input.Planes != 1 {
-			return nil, fmt.Errorf("%w: premultiplied filtering of %v, it needs one plane of 4 samples", ErrUnsupportedImage, cfg.Input)
+		packed := cfg.Input.Pack == 4 && cfg.Input.Planes == 1
+		if !packed && !(planar && cfg.Input.Pack == 1 && depth == 8) {
+			return nil, fmt.Errorf("%w: premultiplied filtering of %v, it needs one plane of 4 samples or 8-bit YCbCr and alpha planes", ErrUnsupportedImage, cfg.Input)
 		}
 	}
-	ctx.premul = cfg.PremultiplyAlpha && cfg.Input.Rect.Size() != cfg.Output.Rect.Size()
+	ctx.premul = cfg.PremultiplyAlpha && !sameSize(&cfg.Input, &cfg.Output)
 	if ctx.premul {
 		// the premultiplied planes are 16-bit regardless of the images
-		ctx.addScratch(preScratch, cfg.Input.Rect.Dx(), cfg.Input.Rect.Dy(), 8)
-		if depth == 8 {
-			ctx.addScratch(outScratch, cfg.Output.Rect.Dx(), cfg.Output.Rect.Dy(), 8)
+		if planar {
+			for i := range chromaAlpha + 1 {
+				p := i
+				if i == chromaAlpha {
+					p = 1
+				}
+				ctx.addScratch(preScratch+i, cfg.Input.Width(p), cfg.Input.Height(p), 2)
+				ctx.addScratch(outScratch+i, cfg.Output.Width(p), cfg.Output.Height(p), 2)
+			}
+			ctx.chroma = makeChromaFootprint(&cfg.Input)
+		} else {
+			ctx.addScratch(preScratch, cfg.Input.Rect.Dx(), cfg.Input.Rect.Dy(), 8)
+			if depth == 8 {
+				ctx.addScratch(outScratch, cfg.Output.Rect.Dx(), cfg.Output.Rect.Dy(), 8)
+			}
 		}
 		depth = 16
 	}
@@ -375,6 +424,10 @@ func NewConverter(cfg *ConverterConfig, filter Filter) (*Converter, error) {
 		}
 		if win != wout && hin != hout {
 			ctx.addScratch(i, win, hout, bpp)
+			if ctx.premul && planar && i == 1 {
+				// resized with the resizers of the chroma
+				ctx.addScratch(chromaAlpha, win, hout, bpp)
+			}
 		}
 	}
 	group.Wait()
@@ -552,7 +605,7 @@ func (ctx *Converter) Convert(dst, src image.Image) error {
 		return fmt.Errorf("%w: output image %v, configured %v", ErrMismatch, od, ctx.cfg.Output)
 	}
 	if ctx.cfg.PremultiplyAlpha && (!isStraight(src) || !isStraight(dst)) {
-		return fmt.Errorf("%w: premultiplied filtering of %T to %T, it needs NRGBA or NRGBA64 images", ErrMismatch, src, dst)
+		return fmt.Errorf("%w: premultiplied filtering of %T to %T, it needs NRGBA, NRGBA64 or NYCbCrA images", ErrMismatch, src, dst)
 	}
 	err = checkConversion(od, id)
 	if err != nil {
@@ -564,7 +617,9 @@ func (ctx *Converter) Convert(dst, src image.Image) error {
 	}
 	scratch, buf := ctx.buffers()
 	var group jobs
-	if ctx.premul {
+	if ctx.premul && len(srcp) == maxPlanes {
+		ctx.convertPremultipliedYCbCrA(&group, dstp, srcp, &scratch)
+	} else if ctx.premul {
 		ctx.convertPremultiplied(&group, &dstp[0], &srcp[0], &scratch)
 	} else {
 		for i := range ctx.cfg.Input.Planes {
@@ -578,7 +633,7 @@ func (ctx *Converter) Convert(dst, src image.Image) error {
 	return nil
 }
 
-func (ctx *Converter) convertPremultiplied(group *jobs, dst, src *plane, scratch *[maxPlanes + 2]plane) {
+func (ctx *Converter) convertPremultiplied(group *jobs, dst, src *plane, scratch *[numScratch]plane) {
 	depth := ctx.cfg.Input.depth()
 	pre := &scratch[preScratch]
 	premultiply(ctx.cfg.Threads, pre, src, depth)
@@ -589,6 +644,21 @@ func (ctx *Converter) convertPremultiplied(group *jobs, dst, src *plane, scratch
 	resizePlane(group, ctx.cfg.Threads, out, pre, &scratch[0], ctx.hrez[0], ctx.wrez[0])
 	group.Wait()
 	unpremultiply(ctx.cfg.Threads, dst, out, depth)
+}
+
+func (ctx *Converter) convertPremultipliedYCbCrA(group *jobs, dst, src []plane, scratch *[numScratch]plane) {
+	pre := scratch[preScratch:][:chromaAlpha+1]
+	out := scratch[outScratch:][:chromaAlpha+1]
+	premultiplyYCbCrA(ctx.cfg.Threads, pre, src, &ctx.chroma)
+	for i := range pre {
+		p := i
+		if i == chromaAlpha {
+			p = 1
+		}
+		resizePlane(group, ctx.cfg.Threads, &out[i], &pre[i], &scratch[i], ctx.hrez[p], ctx.wrez[p])
+	}
+	group.Wait()
+	unpremultiplyYCbCrA(ctx.cfg.Threads, dst, out)
 }
 
 func (ctx *Converter) addScratch(i, width, height, bpp int) {
@@ -602,7 +672,7 @@ func (ctx *Converter) addScratch(i, width, height, bpp int) {
 	ctx.scratch[i] = p
 }
 
-func (ctx *Converter) buffers() ([maxPlanes + 2]plane, []byte) {
+func (ctx *Converter) buffers() ([numScratch]plane, []byte) {
 	scratch := ctx.scratch
 	if ctx.size == 0 {
 		return scratch, nil

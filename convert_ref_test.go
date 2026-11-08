@@ -83,6 +83,9 @@ func refConvert(t testing.TB, dst, src image.Image, interlaced, premultiply bool
 	_, dp, err := inspect(dst, interlaced)
 	expect(t, err, nil)
 	maxv := float64(int(1)<<sd.depth() - 1)
+	if premultiply && len(sp) == maxPlanes {
+		return refConvertYCbCrA(sd, sp, dp, interlaced, filter, maxv)
+	}
 	var out []refPlane
 	for i := range sp {
 		r := refLoad(&sp[i], sd.depth())
@@ -112,9 +115,65 @@ func refConvert(t testing.TB, dst, src image.Image, interlaced, premultiply bool
 	return out
 }
 
-// checkReference compares the planes of img with ref within tol, the
-// colours of premultiplied pixels only where the alpha is at least a
-// quarter (the division by the alpha amplifies the fixed point error).
+// refConvertYCbCrA is refConvert for premultiplied NYCbCrA images, with the
+// luma weighted by the alpha and the chroma by the mean alpha of its pixels,
+// resized as another plane. Colours with an alpha below a quarter are NaN.
+func refConvertYCbCrA(sd *Descriptor, sp, dp []plane, interlaced bool, filter Filter, maxv float64) []refPlane {
+	in := make([]refPlane, chromaAlpha+1)
+	for i := range sp {
+		in[i] = refLoad(&sp[i], 8)
+	}
+	luma, alpha := in[0], in[alphaPlane]
+	ca := refPlane{in[1].w, in[1].h, 1, make([]float64, in[1].w*in[1].h)}
+	f := makeChromaFootprint(sd)
+	for cy, ys := range f.rows {
+		for _, y := range ys {
+			for x := range alpha.w {
+				ca.v[cy*ca.w+f.cols[x]] += alpha.v[y*alpha.w+x]
+			}
+		}
+		for cx := range ca.w {
+			if n := len(ys) * f.ncols[cx]; n != 0 {
+				ca.v[cy*ca.w+cx] /= float64(n)
+			}
+		}
+	}
+	in[chromaAlpha] = ca
+	for i := range luma.v {
+		luma.v[i] *= alpha.v[i] / maxv
+	}
+	for i := range ca.v {
+		in[1].v[i] *= ca.v[i] / maxv
+		in[2].v[i] *= ca.v[i] / maxv
+	}
+	for i, r := range in {
+		p := i
+		if i == chromaAlpha {
+			p = 1
+		}
+		if dp[p].Height != r.h {
+			r = refScale(r, dp[p].Height, true, interlaced, filter, maxv)
+		}
+		if dp[p].Width != r.w {
+			r = refScale(r, dp[p].Width, false, false, filter, maxv)
+		}
+		in[i] = r
+	}
+	for _, c := range []struct{ colour, alpha int }{{0, alphaPlane}, {1, chromaAlpha}, {2, chromaAlpha}} {
+		for i, v := range in[c.colour].v {
+			if a := in[c.alpha].v[i] / maxv; a >= 0.25 {
+				in[c.colour].v[i] = min(v/a, maxv)
+			} else {
+				in[c.colour].v[i] = math.NaN()
+			}
+		}
+	}
+	return in[:maxPlanes]
+}
+
+// checkReference compares the planes of img with ref within tol, the colours of
+// premultiplied pixels only where the alpha is at least a quarter (the division
+// by the alpha amplifies the fixed point error), and none where ref is NaN.
 func checkReference(t testing.TB, img image.Image, ref []refPlane, tol float64, premultiply bool, what string) {
 	t.Helper()
 	d, planes, err := inspect(img, false)
@@ -126,11 +185,17 @@ func checkReference(t testing.TB, img image.Image, ref []refPlane, tol float64, 
 		expect(t, r.h, ref[i].h)
 		for j, v := range r.v {
 			want := ref[i].v[j]
+			if math.IsNaN(want) {
+				continue
+			}
 			ctol := tol
-			if premultiply && j%4 != 3 {
+			if premultiply && len(planes) == 1 && j%4 != 3 {
 				if ref[i].v[j/4*4+3] < maxv/4 {
 					continue
 				}
+				ctol = 4 * tol
+			}
+			if premultiply && len(planes) == maxPlanes && i != alphaPlane {
 				ctol = 4 * tol
 			}
 			if math.Abs(v-want) > ctol {

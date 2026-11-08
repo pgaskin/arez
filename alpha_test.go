@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"math"
@@ -175,7 +176,7 @@ func TestPremultiplyAlpha(t *testing.T) {
 	nrgba := newImage(t, image.NewNRGBA, image.Rect(0, 0, 32, 32))
 	small := newImage(t, image.NewNRGBA, image.Rect(0, 0, 16, 16))
 	for _, img := range []image.Image{
-		newImage(t, nycbcra(image.YCbCrSubsampleRatio420), image.Rect(0, 0, 32, 32)),
+		newImage(t, ycbcr(image.YCbCrSubsampleRatio420), image.Rect(0, 0, 32, 32)),
 		newImage(t, image.NewGray, image.Rect(0, 0, 32, 32)),
 		newImage(t, image.NewAlpha16, image.Rect(0, 0, 32, 32)),
 	} {
@@ -200,6 +201,150 @@ func TestPremultiplyAlpha(t *testing.T) {
 	expect(t, c.Convert(small, nrgba), nil)
 }
 
+var yuvaRatios = []image.YCbCrSubsampleRatio{
+	image.YCbCrSubsampleRatio444,
+	image.YCbCrSubsampleRatio422,
+	image.YCbCrSubsampleRatio420,
+	image.YCbCrSubsampleRatio440,
+	image.YCbCrSubsampleRatio411,
+	image.YCbCrSubsampleRatio410,
+}
+
+// TestPremultiplyYCbCrA resizes NYCbCrA images of opaque red and transparent
+// green halves, and checks that the luma of visible pixels stays red and that
+// every chroma sample is red or (for transparent ones) neutral. The filters
+// have no negative lobes, which overshoot the alpha (clamped to opaque) and the
+// luma (not clamped) differently at the edge.
+func TestPremultiplyYCbCrA(t *testing.T) {
+	ry, rb, rr := color.RGBToYCbCr(255, 0, 0)
+	gy, gb, gr := color.RGBToYCbCr(0, 255, 0)
+	near := func(a, b uint8) bool { return max(a, b)-min(a, b) <= 1 }
+	for _, sr := range yuvaRatios {
+		src := newImage(t, nycbcra(sr), image.Rect(0, 0, 32, 32))
+		for y := range 32 {
+			for x := range 32 {
+				i, c := src.YOffset(x, y), src.COffset(x, y)
+				if x < 16 {
+					src.Y[i], src.Cb[c], src.Cr[c], src.A[i] = ry, rb, rr, 255
+				} else {
+					src.Y[i], src.Cb[c], src.Cr[c], src.A[i] = gy, gb, gr, 0
+				}
+			}
+		}
+		for _, dr := range []image.YCbCrSubsampleRatio{sr, image.YCbCrSubsampleRatio444} {
+			for _, size := range []struct{ w, h int }{{16, 16}, {24, 40}, {32, 32}, {48, 20}} {
+				for _, filter := range []Filter{Bilinear(), Box()} {
+					var outs [][]byte
+					for _, simd := range []bool{true, false} {
+						if !simd && !hasSIMD() {
+							break
+						}
+						what := fmt.Sprintf("%v to %v %vx%v %v simd=%v", sr, dr, size.w, size.h, filter, simd)
+						dst := newImage(t, nycbcra(dr), image.Rect(0, 0, size.w, size.h))
+						c := prepare(t, dst, src, simd, false, filter, 0, premultiplied)
+						expect(t, c.Convert(dst, src), nil)
+						outs = append(outs, imageBytes(dst))
+						resized := dr != sr || size.w != 32 || size.h != 32
+						for y := range size.h {
+							for x := range size.w {
+								i := dst.YOffset(x, y)
+								if a := dst.A[i]; a > 0 && !near(dst.Y[i], ry) {
+									t.Errorf("%v: pixel %v,%v has luma %v alpha %v, want %v", what, x, y, dst.Y[i], a, ry)
+								} else if a == 0 && resized && dst.Y[i] != 0 {
+									t.Errorf("%v: transparent pixel %v,%v has luma %v, want 0", what, x, y, dst.Y[i])
+								}
+							}
+						}
+						for i := range dst.Cb {
+							b, r := dst.Cb[i], dst.Cr[i]
+							if resized && !(near(b, rb) && near(r, rr)) && !(b == 128 && r == 128) {
+								t.Errorf("%v: chroma sample %v is %v,%v, want %v,%v or 128,128", what, i, b, r, rb, rr)
+							}
+						}
+					}
+					if len(outs) == 2 && !bytes.Equal(outs[0], outs[1]) {
+						t.Errorf("%v to %v %vx%v %v: simd differs from go", sr, dr, size.w, size.h, filter)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestPremultiplyYCbCrAPacked checks that premultiplied 4:4:4 NYCbCrA
+// conversions are identical to NRGBA ones of the same samples, except for the
+// neutral chroma of transparent pixels.
+func TestPremultiplyYCbCrAPacked(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	r := image.Rect(0, 0, 40, 30)
+	yuva := newImage(t, nycbcra(image.YCbCrSubsampleRatio444), r)
+	fillImage(rng, yuva)
+	for i := range yuva.A {
+		if rng.Intn(4) == 0 {
+			yuva.A[i] = byte(rng.Intn(4))
+		}
+	}
+	nrgba := newImage(t, image.NewNRGBA, r)
+	for i := range yuva.Y {
+		copy(nrgba.Pix[4*i:], []byte{yuva.Y[i], yuva.Cb[i], yuva.Cr[i], yuva.A[i]})
+	}
+	for _, filter := range []Filter{Bilinear(), Lanczos(3), Box()} {
+		for _, size := range []image.Point{{20, 15}, {64, 48}, {40, 17}, {13, 30}} {
+			for _, interlaced := range []bool{false, true} {
+				what := fmt.Sprintf("%v %v interlaced=%v", filter, size, interlaced)
+				dy := newImage(t, nycbcra(image.YCbCrSubsampleRatio444), image.Rectangle{Max: size})
+				expect(t, prepare(t, dy, yuva, true, interlaced, filter, 0, premultiplied).Convert(dy, yuva), nil)
+				dn := newImage(t, image.NewNRGBA, image.Rectangle{Max: size})
+				expect(t, prepare(t, dn, nrgba, true, interlaced, filter, 0, premultiplied).Convert(dn, nrgba), nil)
+				for i := range dy.Y {
+					want := [4]byte(dn.Pix[4*i:])
+					if want[3] == 0 {
+						want[1], want[2] = 128, 128
+					}
+					if got := [4]byte{dy.Y[i], dy.Cb[i], dy.Cr[i], dy.A[i]}; got != want {
+						t.Fatalf("%v: pixel %v is %v, want %v", what, i, got, want)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestPremultiplyYCbCrAReference compares premultiplied NYCbCrA conversions of
+// every ratio with the float reference.
+func TestPremultiplyYCbCrAReference(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	sizes := []int{4, 5, 9, 16, 17, 33, 64}
+	for typ, it := range testImageTypes {
+		if _, ok := it.new(image.Rect(0, 0, 1, 1)).(*image.NYCbCrA); !ok {
+			continue
+		}
+		ran := 0
+		for range 40 {
+			c := convertCase{
+				typ:         typ,
+				wsrc:        sizes[rng.Intn(len(sizes))],
+				hsrc:        sizes[rng.Intn(len(sizes))],
+				wdst:        sizes[rng.Intn(len(sizes))],
+				hdst:        sizes[rng.Intn(len(sizes))],
+				ox:          rng.Intn(4),
+				oy:          rng.Intn(4),
+				interlaced:  rng.Intn(3) == 0,
+				filter:      rng.Intn(len(convertFilters)),
+				threads:     1 + rng.Intn(4),
+				premultiply: true,
+				seed:        rng.Int63(),
+			}
+			if runConvertCase(t, c) {
+				ran++
+			}
+		}
+		if ran < 20 {
+			t.Errorf("%v: only %v cases ran", it.name, ran)
+		}
+	}
+}
+
 // TestPremultiplyCopy checks that a premultiplied conversion to the same size
 // copies the pixels correctly.
 func TestPremultiplyCopy(t *testing.T) {
@@ -213,12 +358,18 @@ func TestPremultiplyCopy(t *testing.T) {
 		nrgba.Pix[i+3] = byte(rng.Intn(4))
 		binary.BigEndian.PutUint16(nrgba64.Pix[2*i+6:], uint16(rng.Intn(16)))
 	}
+	yuva := newImage(t, nycbcra(image.YCbCrSubsampleRatio420), r)
+	fillImage(rng, yuva)
+	for i := 0; i < len(yuva.A); i += 3 {
+		yuva.A[i] = byte(rng.Intn(4))
+	}
 	for _, tt := range []struct {
 		src image.Image
 		new func(image.Rectangle) image.Image
 	}{
 		{nrgba, func(r image.Rectangle) image.Image { return image.NewNRGBA(r) }},
 		{nrgba64, func(r image.Rectangle) image.Image { return image.NewNRGBA64(r) }},
+		{yuva, func(r image.Rectangle) image.Image { return image.NewNYCbCrA(r, image.YCbCrSubsampleRatio420) }},
 	} {
 		for _, simd := range []bool{true, false} {
 			for _, interlaced := range []bool{false, true} {

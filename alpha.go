@@ -18,7 +18,7 @@ import (
 
 func isStraight(img image.Image) bool {
 	switch img.(type) {
-	case *image.NRGBA, *image.NRGBA64:
+	case *image.NRGBA, *image.NRGBA64, *image.NYCbCrA:
 		return true
 	}
 	return false
@@ -116,6 +116,134 @@ func unpremultiplyRow16(d, s []byte) {
 		}
 		binary.BigEndian.PutUint64((*[8]byte)(d[x:])[:], v)
 	}
+}
+
+// The NYCbCrA passes premultiply the luma by the alpha, and the chroma by the
+// mean alpha of the luma pixels of each chroma sample, resized as another plane
+// at the chroma resolution (chromaAlpha) to divide the resized chroma by. The
+// chroma is weighted without its 128 offset, which cancels out in the division.
+
+// chromaFootprint maps the chroma samples of a YCbCr image to its luma pixels
+// like image.YCbCr, by the fields of interlaced images.
+type chromaFootprint struct {
+	rows  [][]int // luma rows of each chroma row
+	cols  []int   // chroma column of each luma column
+	ncols []int   // number of luma columns of each chroma column
+}
+
+func makeChromaFootprint(d *Descriptor) chromaFootprint {
+	sx, sy := subsampling(d.Ratio)
+	cw, ch := d.Width(1), d.Height(1)
+	f := chromaFootprint{
+		rows:  make([][]int, ch),
+		cols:  make([]int, d.Width(0)),
+		ncols: make([]int, cw),
+	}
+	for x := range f.cols {
+		c := clip((d.Rect.Min.X+x)/sx-d.Rect.Min.X/sx, 0, cw-1)
+		f.cols[x] = c
+		f.ncols[c]++
+	}
+	for y := range d.Height(0) {
+		c := (d.Rect.Min.Y+y)/sy - d.Rect.Min.Y/sy
+		if d.Interlaced && sy == 2 {
+			c = y>>2<<1 | y&1 // in the same field
+		}
+		c = clip(c, 0, ch-1)
+		f.rows[c] = append(f.rows[c], y)
+	}
+	return f
+}
+
+// premultiplyYCbCrA writes the 8-bit straight alpha planes of src as 16-bit
+// premultiplied planes, and the chromaAlpha plane, in pre, with threads
+// goroutines.
+func premultiplyYCbCrA(threads int, pre, src []plane, f *chromaFootprint) {
+	luma, alpha := &src[0], &src[alphaPlane]
+	forRows(threads, luma.Height, func(y0, y1 int) {
+		for y := y0; y < y1; y++ {
+			a := alpha.Data[y*alpha.Pitch:][:alpha.Width]
+			dy := pre[0].Data[y*pre[0].Pitch:][:2*luma.Width]
+			da := pre[alphaPlane].Data[y*pre[alphaPlane].Pitch:][:2*luma.Width]
+			for x, v := range luma.Data[y*luma.Pitch:][:luma.Width] {
+				binary.BigEndian.PutUint16(dy[2*x:], uint16(scale8(uint32(v), uint32(a[x]))))
+				binary.BigEndian.PutUint16(da[2*x:], uint16(a[x])*257)
+			}
+		}
+	})
+	cb, cr := &src[1], &src[2]
+	forRows(threads, cb.Height, func(y0, y1 int) {
+		sums := make([]uint32, cb.Width)
+		for y := y0; y < y1; y++ {
+			clear(sums)
+			for _, ly := range f.rows[y] {
+				for x, v := range alpha.Data[ly*alpha.Pitch:][:alpha.Width] {
+					sums[f.cols[x]] += uint32(v)
+				}
+			}
+			b := cb.Data[y*cb.Pitch:][:cb.Width]
+			r := cr.Data[y*cr.Pitch:][:cr.Width]
+			db := pre[1].Data[y*pre[1].Pitch:][:2*cb.Width]
+			dr := pre[2].Data[y*pre[2].Pitch:][:2*cb.Width]
+			da := pre[chromaAlpha].Data[y*pre[chromaAlpha].Pitch:][:2*cb.Width]
+			for x, sum := range sums {
+				var a uint32 // mean 16-bit alpha
+				if n := uint32(len(f.rows[y]) * f.ncols[x]); n != 0 {
+					a = (sum*257 + n/2) / n
+				}
+				binary.BigEndian.PutUint16(db[2*x:], uint16((uint32(b[x])*a+127)/255))
+				binary.BigEndian.PutUint16(dr[2*x:], uint16((uint32(r[x])*a+127)/255))
+				binary.BigEndian.PutUint16(da[2*x:], uint16(a))
+			}
+		}
+	})
+}
+
+// unpremultiplyYCbCrA writes the 16-bit premultiplied planes of out as 8-bit
+// straight alpha planes in dst, with threads goroutines. The colour of pixels
+// with an alpha of zero is black.
+func unpremultiplyYCbCrA(threads int, dst, out []plane) {
+	luma, alpha := &dst[0], &dst[alphaPlane]
+	forRows(threads, luma.Height, func(y0, y1 int) {
+		for y := y0; y < y1; y++ {
+			s := out[0].Data[y*out[0].Pitch:][:2*luma.Width]
+			sa := out[alphaPlane].Data[y*out[alphaPlane].Pitch:][:2*luma.Width]
+			d := luma.Data[y*luma.Pitch:][:luma.Width]
+			da := alpha.Data[y*alpha.Pitch:][:alpha.Width]
+			for x := range d {
+				a := uint32(binary.BigEndian.Uint16(sa[2*x:]))
+				da[x] = byte((a + 128) / 257)
+				d[x] = byte(unscaleSample8(uint32(binary.BigEndian.Uint16(s[2*x:])), a, 0))
+			}
+		}
+	})
+	cb, cr := &dst[1], &dst[2]
+	forRows(threads, cb.Height, func(y0, y1 int) {
+		for y := y0; y < y1; y++ {
+			sb := out[1].Data[y*out[1].Pitch:][:2*cb.Width]
+			sr := out[2].Data[y*out[2].Pitch:][:2*cb.Width]
+			sa := out[chromaAlpha].Data[y*out[chromaAlpha].Pitch:][:2*cb.Width]
+			b := cb.Data[y*cb.Pitch:][:cb.Width]
+			r := cr.Data[y*cr.Pitch:][:cr.Width]
+			for x := range b {
+				a := uint32(binary.BigEndian.Uint16(sa[2*x:]))
+				b[x] = byte(unscaleSample8(uint32(binary.BigEndian.Uint16(sb[2*x:])), a, 128))
+				r[x] = byte(unscaleSample8(uint32(binary.BigEndian.Uint16(sr[2*x:])), a, 128))
+			}
+		}
+	})
+}
+
+// unscaleSample8 divides the 16-bit premultiplied sample c by the 16-bit alpha
+// a into an 8-bit sample, or zero if the alpha rounds to zero at 8 bits.
+func unscaleSample8(c, a, zero uint32) uint32 {
+	switch {
+	case (a+128)/257 == 0:
+		return zero
+	case a == 65535:
+		return narrow16(c)
+	}
+	return unscale8(c, a, 1/float64(a))
 }
 
 // scale8 premultiplies the 8-bit colour c by the 8-bit alpha a into a 16-bit
