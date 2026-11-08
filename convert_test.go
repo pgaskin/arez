@@ -500,7 +500,7 @@ func TestConverterConfigCopy(t *testing.T) {
 		c, err := NewConverter(&cfg, Bicubic())
 		expect(t, err, nil)
 		expect(t, cfg, want)
-		expect(t, c.(*converterContext).Threads, runtime.GOMAXPROCS(0))
+		expect(t, c.cfg.Threads, runtime.GOMAXPROCS(0))
 		expect(t, c.Convert(newImage(t, image.NewGray, image.Rect(0, 0, 100, 100)), newImage(t, image.NewGray, image.Rect(0, 0, 50, 50))), nil)
 	}
 }

@@ -69,7 +69,7 @@ func writeImage(t testing.TB, name string, img image.Image) {
 	expect(t, err, nil)
 }
 
-func prepare(t testing.TB, dst, src image.Image, simd, interlaced bool, filter Filter, threads int, opts ...func(*ConverterConfig)) Converter {
+func prepare(t testing.TB, dst, src image.Image, simd, interlaced bool, filter Filter, threads int, opts ...func(*ConverterConfig)) *Converter {
 	t.Helper()
 	cfg, err := Prepare(dst, src)
 	expect(t, err, nil)

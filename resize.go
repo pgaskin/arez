@@ -26,34 +26,12 @@ type ResizerConfig struct {
 	DisableSIMD bool // use the Go scalers only
 }
 
-// Resizer resizes planes of raw samples in one direction, see [NewResizer].
-type Resizer interface {
-	// Resize resizes the plane src of width x height pixels into dst. The rows
-	// of dst and src start dstPitch and srcPitch bytes apart, and 16-bit
-	// samples are big endian, as in the image package.
-	//
-	// The resized dimension of the source, width for a horizontal resize and
-	// height for a vertical one, must be the configured Input, and the other
-	// one is kept.
-	//
-	// The pitches must not be negative and the slices must be sized correctly
-	// for the planes (src at least srcPitch*(height-1) + width*bpp bytes, dst
-	// at least dstPitch*(rows-1) + columns*bpp bytes, where rows and columns
-	// are the destination dimensions, and bpp = Pack*Depth/8 the bytes per
-	// pixel).
-	//
-	// The rows of dst are written from several goroutines and must not overlap.
-	// When there is more than one goroutine, dstPitch must be at least
-	// columns*bpp. The rows of src may overlap.
-	//
-	// Resize will panic if any of these requirements are not met.
-	Resize(dst, src []byte, width, height, dstPitch, srcPitch int)
-}
-
 type scaler func(dst, src []byte, cof []int16, off []int32,
 	taps, width, height, dstPitch, srcPitch int)
 
-type resizer struct {
+// Resizer resizes planes of raw samples in one direction, see [NewResizer]. A
+// resizer is safe for concurrent use.
+type Resizer struct {
 	cfg     ResizerConfig
 	kernels []kernel
 	scaler  scaler
@@ -63,11 +41,11 @@ type resizer struct {
 // of filter. It copies cfg. NewResizer returns an error matching
 // [ErrInvalidDescriptor] if cfg/filter is not valid, or
 // [ErrTooSmall]/[ErrTooLarge] if unsupported.
-func NewResizer(cfg *ResizerConfig, filter Filter) (Resizer, error) {
+func NewResizer(cfg *ResizerConfig, filter Filter) (*Resizer, error) {
 	if filter == nil {
 		return nil, fmt.Errorf("%w: nil filter", ErrInvalidFilter)
 	}
-	ctx := resizer{
+	ctx := Resizer{
 		cfg: *cfg,
 	}
 	if ctx.cfg.Depth == 0 {
@@ -233,7 +211,24 @@ func scaleSlices(group *jobs, scaler scaler,
 	})
 }
 
-func (c *resizer) Resize(dst, src []byte, width, height, dp, sp int) {
+// Resize resizes the plane src of width x height pixels into dst. The rows of
+// dst and src start dstPitch and srcPitch bytes apart, and 16-bit samples are
+// big endian, as in the image package.
+//
+// The resized dimension of the source, width for a horizontal resize and height
+// for a vertical one, must be the configured Input, and the other one is kept.
+//
+// The pitches must not be negative and the slices must be sized correctly for
+// the planes (src at least srcPitch*(height-1) + width*bpp bytes, dst at least
+// dstPitch*(rows-1) + columns*bpp bytes, where rows and columns are the
+// destination dimensions, and bpp = Pack*Depth/8 the bytes per pixel).
+//
+// The rows of dst are written from several goroutines and must not overlap.
+// When there is more than one goroutine, dstPitch must be at least columns*bpp.
+// The rows of src may overlap.
+//
+// Resize will panic if any of these requirements are not met.
+func (c *Resizer) Resize(dst, src []byte, width, height, dstPitch, srcPitch int) {
 	field := bin(c.cfg.Interlaced)
 	dwidth, dheight, input := c.cfg.Output, height, width
 	if c.cfg.Vertical {
@@ -243,17 +238,17 @@ func (c *resizer) Resize(dst, src []byte, width, height, dp, sp int) {
 	if input != c.cfg.Input || width < 1 || height < 1 {
 		panic(fmt.Sprintf("arez: resize of a %vx%v plane with a resizer of %v to %v", width, height, c.cfg.Input, c.cfg.Output))
 	}
-	if sp < 0 || dp < 0 {
-		panic(fmt.Sprintf("arez: resize with a source pitch of %v and a destination pitch of %v", sp, dp))
+	if srcPitch < 0 || dstPitch < 0 {
+		panic(fmt.Sprintf("arez: resize with a source pitch of %v and a destination pitch of %v", srcPitch, dstPitch))
 	}
-	if n, ok := planeBytes(width, height, pk, sp); !ok || len(src) < n {
-		panic(fmt.Sprintf("arez: resize source of %v bytes, %vx%v pixels of %v bytes with a pitch of %v need %v", len(src), width, height, pk, sp, n))
+	if n, ok := planeBytes(width, height, pk, srcPitch); !ok || len(src) < n {
+		panic(fmt.Sprintf("arez: resize source of %v bytes, %vx%v pixels of %v bytes with a pitch of %v need %v", len(src), width, height, pk, srcPitch, n))
 	}
-	if n, ok := planeBytes(dwidth, dheight, pk, dp); !ok || len(dst) < n {
-		panic(fmt.Sprintf("arez: resize destination of %v bytes, %vx%v pixels of %v bytes with a pitch of %v need %v", len(dst), dwidth, dheight, pk, dp, n))
+	if n, ok := planeBytes(dwidth, dheight, pk, dstPitch); !ok || len(dst) < n {
+		panic(fmt.Sprintf("arez: resize destination of %v bytes, %vx%v pixels of %v bytes with a pitch of %v need %v", len(dst), dwidth, dheight, pk, dstPitch, n))
 	}
-	if dheight > 1 && dp < dwidth*pk {
-		panic(fmt.Sprintf("arez: resize destination with overlapping rows, a pitch of %v for rows of %v bytes", dp, dwidth*pk))
+	if dheight > 1 && dstPitch < dwidth*pk {
+		panic(fmt.Sprintf("arez: resize destination with overlapping rows, a pitch of %v for rows of %v bytes", dstPitch, dwidth*pk))
 	}
 	var group jobs
 	for i, k := range c.kernels[:1+field] {
@@ -268,8 +263,8 @@ func (c *resizer) Resize(dst, src []byte, width, height, dp, sp int) {
 		// scaleSlices gives every thread at least one row
 		threads := clip(c.cfg.Threads, 1, max(rows, 1))
 		scaleSlices(&group, c.scaler, c.cfg.Vertical, threads,
-			k.size, dwidth*pk, rows, dp<<field, sp<<field,
-			dst[dp*i:], src[sp*i:], k.coeffs, k.cofscale, k.offsets)
+			k.size, dwidth*pk, rows, dstPitch<<field, srcPitch<<field,
+			dst[dstPitch*i:], src[srcPitch*i:], k.coeffs, k.cofscale, k.offsets)
 	}
 	group.Wait()
 }

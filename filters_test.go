@@ -91,10 +91,6 @@ func (panicFilter) Support() int          { return 1 }
 func (panicFilter) Name() string          { return "panic" }
 func (f panicFilter) Get(float64) float64 { panic(f.value) }
 
-type panicResizer struct{ value string }
-
-func (r panicResizer) Resize([]byte, []byte, int, int, int, int) { panic(r.value) }
-
 func TestPanics(t *testing.T) {
 	src := newImage(t, ycbcr(image.YCbCrSubsampleRatio420), image.Rect(0, 0, 32, 32))
 	dst := newImage(t, ycbcr(image.YCbCrSubsampleRatio420), image.Rect(0, 0, 48, 40))
@@ -126,13 +122,13 @@ func TestPanics(t *testing.T) {
 		}
 		c, err := NewConverter(cfg, Bilinear())
 		expect(t, err, nil)
-		c.(*converterContext).wrez[1] = panicResizer{what}
+		c.wrez[1].scaler = func([]byte, []byte, []int16, []int32, int, int, int, int, int) { panic(what) }
 		if v := recovered(what+" Convert", func() { c.Convert(dst, src) }); v != nil && v != what {
 			t.Errorf("%v Convert: got %v, want %v", what, v, what)
 		}
 		r, err := NewResizer(&ResizerConfig{Input: 32, Output: 16, Vertical: true, Threads: threads}, Bilinear())
 		expect(t, err, nil)
-		r.(*resizer).scaler = func([]byte, []byte, []int16, []int32, int, int, int, int, int) { panic(what) }
+		r.scaler = func([]byte, []byte, []int16, []int32, int, int, int, int, int) { panic(what) }
 		if v := recovered(what+" Resize", func() { r.Resize(make([]byte, 16*16), make([]byte, 32*16), 16, 32, 16, 16) }); v != nil && v != what {
 			t.Errorf("%v Resize: got %v, want %v", what, v, what)
 		}

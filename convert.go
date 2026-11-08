@@ -46,17 +46,6 @@ var (
 	ErrInvalidFilter = errors.New("arez: invalid filter")
 )
 
-// Converter resizes images of one format and size into another, see
-// [NewConverter]. It converts the chroma subsampling of YCbCr images. A
-// Converter is safe for concurrent use, and may use up to
-// [ConverterConfig.Threads] goroutines per plane.
-type Converter interface {
-	// Convert resizes src into dst, which must match the descriptors the
-	// converter was created for, returning an error otherwise. The result is
-	// undefined if dst and src overlap.
-	Convert(dst, src image.Image) error
-}
-
 // ChromaRatio is the chroma subsampling ratio of a YCbCr image, see
 // [ChromaRatioOf].
 type ChromaRatio int
@@ -227,10 +216,14 @@ type plane struct {
 	Bpp    int    // bytes per pixel
 }
 
-type converterContext struct {
-	ConverterConfig
-	wrez    [maxPlanes]Resizer
-	hrez    [maxPlanes]Resizer
+// Converter resizes images of one format and size into another, see
+// [NewConverter]. It converts the chroma subsampling of YCbCr images. A
+// Converter is safe for concurrent use, and may use up to
+// [ConverterConfig.Threads] goroutines per plane.
+type Converter struct {
+	cfg     ConverterConfig
+	wrez    [maxPlanes]*Resizer
+	hrez    [maxPlanes]*Resizer
 	scratch [maxPlanes + 2]plane // Pitch is 0 for unused planes
 	size    int                  // bytes of all scratch planes
 	pool    sync.Pool            // []byte of size bytes
@@ -289,7 +282,7 @@ func checkTypes(output, input image.Image) error {
 
 // NewConverter returns a [Converter] for cfg (which is copied), resizing with
 // filter (which must not be nil).
-func NewConverter(cfg *ConverterConfig, filter Filter) (Converter, error) {
+func NewConverter(cfg *ConverterConfig, filter Filter) (*Converter, error) {
 	if filter == nil {
 		return nil, fmt.Errorf("%w: nil filter", ErrInvalidFilter)
 	}
@@ -297,10 +290,10 @@ func NewConverter(cfg *ConverterConfig, filter Filter) (Converter, error) {
 	if err != nil {
 		return nil, err
 	}
-	ctx := &converterContext{
-		ConverterConfig: *cfg,
+	ctx := &Converter{
+		cfg: *cfg,
 	}
-	cfg = &ctx.ConverterConfig
+	cfg = &ctx.cfg
 	if cfg.Threads <= 0 {
 		cfg.Threads = runtime.GOMAXPROCS(0)
 	}
@@ -515,7 +508,7 @@ func makePlane(width, height, pitch, bpp int, pix []byte) (plane, bool) {
 	}, true
 }
 
-func resizePlane(group *jobs, threads int, dst, src, buf *plane, hrez, wrez Resizer) {
+func resizePlane(group *jobs, threads int, dst, src, buf *plane, hrez, wrez *Resizer) {
 	dispatch(group, threads, func() {
 		hdst := dst
 		wsrc := src
@@ -535,39 +528,42 @@ func resizePlane(group *jobs, threads int, dst, src, buf *plane, hrez, wrez Resi
 	})
 }
 
-func (ctx *converterContext) Convert(output, input image.Image) error {
-	id, src, err := inspect(input, ctx.Input.Interlaced)
+// Convert resizes src into dst, which must match the descriptors the converter
+// was created for, returning an error otherwise. The result is undefined if
+// output and input overlap.
+func (ctx *Converter) Convert(dst, src image.Image) error {
+	id, srcp, err := inspect(src, ctx.cfg.Input.Interlaced)
 	if err != nil {
 		return err
 	}
-	od, dst, err := inspectOutput(output, ctx.Output.Interlaced)
+	od, dstp, err := inspectOutput(dst, ctx.cfg.Output.Interlaced)
 	if err != nil {
 		return err
 	}
-	if !id.matches(&ctx.Input) {
-		return fmt.Errorf("%w: input image %v, configured %v", ErrMismatch, id, ctx.Input)
+	if !id.matches(&ctx.cfg.Input) {
+		return fmt.Errorf("%w: input image %v, configured %v", ErrMismatch, id, ctx.cfg.Input)
 	}
-	if !od.matches(&ctx.Output) {
-		return fmt.Errorf("%w: output image %v, configured %v", ErrMismatch, od, ctx.Output)
+	if !od.matches(&ctx.cfg.Output) {
+		return fmt.Errorf("%w: output image %v, configured %v", ErrMismatch, od, ctx.cfg.Output)
 	}
-	if ctx.PremultiplyAlpha && (!isStraight(input) || !isStraight(output)) {
-		return fmt.Errorf("%w: premultiplied filtering of %T to %T, it needs NRGBA or NRGBA64 images", ErrMismatch, input, output)
+	if ctx.cfg.PremultiplyAlpha && (!isStraight(src) || !isStraight(dst)) {
+		return fmt.Errorf("%w: premultiplied filtering of %T to %T, it needs NRGBA or NRGBA64 images", ErrMismatch, src, dst)
 	}
 	err = checkConversion(od, id)
 	if err != nil {
 		return err
 	}
-	err = checkTypes(output, input)
+	err = checkTypes(dst, src)
 	if err != nil {
 		return err
 	}
 	scratch, buf := ctx.buffers()
 	var group jobs
 	if ctx.premul {
-		ctx.convertPremultiplied(&group, &dst[0], &src[0], &scratch)
+		ctx.convertPremultiplied(&group, &dstp[0], &srcp[0], &scratch)
 	} else {
-		for i := range ctx.Input.Planes {
-			resizePlane(&group, ctx.Threads, &dst[i], &src[i], &scratch[i], ctx.hrez[i], ctx.wrez[i])
+		for i := range ctx.cfg.Input.Planes {
+			resizePlane(&group, ctx.cfg.Threads, &dstp[i], &srcp[i], &scratch[i], ctx.hrez[i], ctx.wrez[i])
 		}
 	}
 	group.Wait()
@@ -577,20 +573,20 @@ func (ctx *converterContext) Convert(output, input image.Image) error {
 	return nil
 }
 
-func (ctx *converterContext) convertPremultiplied(group *jobs, dst, src *plane, scratch *[maxPlanes + 2]plane) {
-	depth := ctx.Input.depth()
+func (ctx *Converter) convertPremultiplied(group *jobs, dst, src *plane, scratch *[maxPlanes + 2]plane) {
+	depth := ctx.cfg.Input.depth()
 	pre := &scratch[preScratch]
-	premultiply(ctx.Threads, pre, src, depth)
+	premultiply(ctx.cfg.Threads, pre, src, depth)
 	out := dst
 	if depth == 8 {
 		out = &scratch[outScratch]
 	}
-	resizePlane(group, ctx.Threads, out, pre, &scratch[0], ctx.hrez[0], ctx.wrez[0])
+	resizePlane(group, ctx.cfg.Threads, out, pre, &scratch[0], ctx.hrez[0], ctx.wrez[0])
 	group.Wait()
-	unpremultiply(ctx.Threads, dst, out, depth)
+	unpremultiply(ctx.cfg.Threads, dst, out, depth)
 }
 
-func (ctx *converterContext) addScratch(i, width, height, bpp int) {
+func (ctx *Converter) addScratch(i, width, height, bpp int) {
 	p := plane{
 		Width:  width,
 		Height: height,
@@ -601,7 +597,7 @@ func (ctx *converterContext) addScratch(i, width, height, bpp int) {
 	ctx.scratch[i] = p
 }
 
-func (ctx *converterContext) buffers() ([maxPlanes + 2]plane, []byte) {
+func (ctx *Converter) buffers() ([maxPlanes + 2]plane, []byte) {
 	scratch := ctx.scratch
 	if ctx.size == 0 {
 		return scratch, nil
