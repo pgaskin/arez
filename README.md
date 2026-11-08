@@ -4,7 +4,7 @@
 [![Test](https://github.com/pgaskin/arez/actions/workflows/test.yml/badge.svg)](https://github.com/pgaskin/arez/actions/workflows/test.yml)
 [![Fuzz](https://github.com/pgaskin/arez/actions/workflows/fuzz.yml/badge.svg)](https://github.com/pgaskin/arez/actions/workflows/fuzz.yml)
 
-Go image resizing library with amd64/arm64/wasm SIMD support. Based on [`rez`](https://github.com/bamiaux/rez), but rewritten to use [`archsimd`](https://pkg.go.dev/simd/archsimd), with amd64/arm64/wasm support, more image formats, and a modernized API. Requires `GOEXPERIMENT=simd`.
+Go image resizing library with amd64/arm64/wasm SIMD support. Based on [`rez`](https://github.com/bamiaux/rez), but rewritten to use [`archsimd`](https://pkg.go.dev/simd/archsimd), with amd64/arm64/wasm support, more image formats, and a modernized API. Requires `GOEXPERIMENT=simd`, otherwise it falls back to an unoptimized implementation.
 
 ### Features
 
