@@ -15,15 +15,29 @@ import (
 //
 // Rows must not be more than 2^31-1 bytes, or an error matching [ErrTooLarge]
 // will be returned.
+//
+// ReducingGap speeds up large downscales by resizing in two steps, like
+// [Pillow]. First, the input is averaged like [Box] in blocks of n =
+// floor(Input/Output/ReducingGap) pixels, if n is at least 2. Second, the
+// averaged pixels are resized to Output with the filter, which changes the size
+// by no less than ReducingGap times. If set, ReducingGap must be at least 1.
+// The bigger ReducingGap, the closer the result is to a single resize. The
+// smaller ReducingGap, the faster the resize. With a ReducingGap of 3 or more,
+// the result is indistinguishable from a single resize in most cases.
+// ReducingGap has no effect with [Box] and [Nearest] (or other filters with a
+// support independent of the scale), which are not faster in two steps.
+//
+// [Pillow]: https://pillow.readthedocs.io/en/latest/reference/Image.html#PIL.Image.Image.resize
 type ResizerConfig struct {
-	Depth       int  // bits per sample, 8 (the default, also 0) or 16
-	Input       int  // input size in pixels (must be at least 2, or 2 per field when interlaced)
-	Output      int  // output size in pixels (must be at least 1)
-	Vertical    bool // resize the height instead of the width
-	Interlaced  bool // whether the rows are two interlaced fields, vertical resizes only
-	Pack        int  // samples per pixel, 1 (the default, also 0) or more (must not be negative)
-	Threads     int  // number of goroutines, 0 for GOMAXPROCS
-	DisableSIMD bool // use the Go scalers only
+	Depth       int     // bits per sample, 8 (the default, also 0) or 16
+	Input       int     // input size in pixels (must be at least 2, or 2 per field when interlaced)
+	Output      int     // output size in pixels (must be at least 1)
+	Vertical    bool    // resize the height instead of the width
+	Interlaced  bool    // whether the rows are two interlaced fields, vertical resizes only
+	Pack        int     // samples per pixel, 1 (the default, also 0) or more (must not be negative)
+	Threads     int     // number of goroutines, 0 for GOMAXPROCS
+	DisableSIMD bool    // use the Go scalers only
+	ReducingGap float64 // average large downscales first, see above (0 disables it)
 }
 
 type scaler func(dst, src []byte, cof []int16, off []int32,
@@ -35,6 +49,10 @@ type Resizer struct {
 	cfg     ResizerConfig
 	kernels []kernel
 	scaler  scaler
+
+	// for ReducingGap, the box average and the filter steps
+	reduce, resize *Resizer
+	buf            sync.Pool // *[]byte for the output of reduce
 }
 
 // NewResizer returns a [Resizer] for the resize cfg describes, with the weights
@@ -62,6 +80,22 @@ func NewResizer(cfg *ResizerConfig, filter Filter) (*Resizer, error) {
 	if err := checkResize(&ctx.cfg); err != nil {
 		return nil, err
 	}
+	if mid, ok := reducedInput(&ctx.cfg, filter); ok {
+		step := ctx.cfg
+		step.ReducingGap = 0
+		step.Output = mid
+		reduce, err := NewResizer(&step, Box())
+		if err != nil {
+			return nil, err
+		}
+		step.Input, step.Output = mid, ctx.cfg.Output
+		resize, err := NewResizer(&step, filter)
+		if err != nil {
+			return nil, err
+		}
+		ctx.reduce, ctx.resize = reduce, resize
+		return &ctx, nil
+	}
 	k, err := makeKernel(&ctx.cfg, filter, 0)
 	if err != nil {
 		return nil, err
@@ -82,7 +116,29 @@ func NewResizer(cfg *ResizerConfig, filter Filter) (*Resizer, error) {
 	return &ctx, nil
 }
 
+// reducedInput returns the size of the box average of a resize with
+// ReducingGap, and whether to average first.
+func reducedInput(cfg *ResizerConfig, filter Filter) (int, bool) {
+	if cfg.ReducingGap == 0 {
+		return 0, false
+	}
+	ratio := float64(cfg.Input) / float64(cfg.Output)
+	n := int(min(ratio/cfg.ReducingGap, math.MaxInt32)) // pixels per block
+	if n < 2 {
+		return 0, false
+	}
+	mid := (cfg.Input + n - 1) / n
+	// a box average already reads every input pixel once
+	if mid>>bin(cfg.Interlaced) < 2 || filter == Box() || filter.Support(1/ratio) <= filter.Support(float64(n)/ratio) {
+		return 0, false
+	}
+	return mid, true
+}
+
 func checkResize(cfg *ResizerConfig) error {
+	if g := cfg.ReducingGap; g != 0 && !(g >= 1) {
+		return fmt.Errorf("%w: reducing gap %v", ErrInvalidDescriptor, g)
+	}
 	if cfg.Depth != 8 && cfg.Depth != 16 {
 		return fmt.Errorf("%w: depth %v", ErrInvalidDescriptor, cfg.Depth)
 	}
@@ -109,6 +165,24 @@ func checkResize(cfg *ResizerConfig) error {
 		return fmt.Errorf("%w: output %v of %v bytes", ErrTooLarge, cfg.Output, bpp)
 	}
 	return nil
+}
+
+// resizeReduced resizes src into dst through a buffer of the output of
+// c.reduce, with pixels of pk bytes.
+func (c *Resizer) resizeReduced(dst, src []byte, width, height, dstPitch, srcPitch, pk int) {
+	w, h := c.resize.cfg.Input, height
+	if c.cfg.Vertical {
+		w, h = width, c.resize.cfg.Input
+	}
+	pitch := w * pk
+	buf, _ := c.buf.Get().(*[]byte)
+	if buf == nil || len(*buf) < pitch*h {
+		b := make([]byte, pitch*h)
+		buf = &b
+	}
+	c.reduce.Resize(*buf, src, width, height, pitch, srcPitch)
+	c.resize.Resize(dst, *buf, w, h, dstPitch, pitch)
+	c.buf.Put(buf)
 }
 
 // planeBytes returns the bytes a plane of width x height pixels of bpp bytes
@@ -249,6 +323,10 @@ func (c *Resizer) Resize(dst, src []byte, width, height, dstPitch, srcPitch int)
 	}
 	if dheight > 1 && dstPitch < dwidth*pk {
 		panic(fmt.Sprintf("arez: resize destination with overlapping rows, a pitch of %v for rows of %v bytes", dstPitch, dwidth*pk))
+	}
+	if c.reduce != nil {
+		c.resizeReduced(dst, src, width, height, dstPitch, srcPitch, pk)
+		return
 	}
 	var group jobs
 	for i, k := range c.kernels[:1+field] {

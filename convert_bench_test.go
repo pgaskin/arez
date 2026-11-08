@@ -68,6 +68,10 @@ var (
 )
 
 func benchSpeed(b *testing.B, bt BenchType, simd bool) {
+	benchSpeedGap(b, bt, simd, 0)
+}
+
+func benchSpeedGap(b *testing.B, bt BenchType, simd bool, gap float64) {
 	raw := readImage(b, "testdata/lenna.jpg")
 	var src, dst image.Image
 	src = newImage(b, ycbcr(image.YCbCrSubsampleRatio420), image.Rect(0, 0, bt.win, bt.hin))
@@ -86,6 +90,9 @@ func benchSpeed(b *testing.B, bt BenchType, simd bool) {
 	var opts []func(*ConverterConfig)
 	if bt.premultiply {
 		opts = append(opts, premultiplied)
+	}
+	if gap != 0 {
+		opts = append(opts, func(cfg *ConverterConfig) { cfg.ReducingGap = gap })
 	}
 	converter := prepare(b, dst, src, simd, bt.interlaced, bt.filter, 0, opts...)
 	b.SetBytes(bytes)
@@ -140,3 +147,9 @@ func BenchmarkImageThumbBicubic1080YuvGo(b *testing.B)         { benchSpeed(b, t
 func BenchmarkImageThumbBicubic1080YuvSimd(b *testing.B)       { benchSpeed(b, thumbs[5], true) }
 func BenchmarkImageThumbLanczos1080RgbaGo(b *testing.B)        { benchSpeed(b, thumbs[6], false) }
 func BenchmarkImageThumbLanczos1080RgbaSimd(b *testing.B)      { benchSpeed(b, thumbs[6], true) }
+func BenchmarkImageThumbLanczos4kYuvGap2Go(b *testing.B)       { benchSpeedGap(b, thumbs[0], false, 2) }
+func BenchmarkImageThumbLanczos4kYuvGap2Simd(b *testing.B)     { benchSpeedGap(b, thumbs[0], true, 2) }
+func BenchmarkImageThumbLanczos4kRgbaGap2Go(b *testing.B)      { benchSpeedGap(b, thumbs[3], false, 2) }
+func BenchmarkImageThumbLanczos4kRgbaGap2Simd(b *testing.B)    { benchSpeedGap(b, thumbs[3], true, 2) }
+func BenchmarkImageThumbLanczos1080RgbaGap2Simd(b *testing.B)  { benchSpeedGap(b, thumbs[6], true, 2) }
+func BenchmarkImageThumbLanczos1080RgbaGap3Simd(b *testing.B)  { benchSpeedGap(b, thumbs[6], true, 3) }

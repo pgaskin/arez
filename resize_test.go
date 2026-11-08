@@ -12,6 +12,7 @@ import (
 	"math"
 	"math/rand"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -265,6 +266,136 @@ func TestResizeOverlappingSourceAllocs(t *testing.T) {
 		}
 		if few, many := allocs(4), allocs(1000); many > few {
 			t.Errorf("%+v: %v allocations for 1000 rows, %v for 4", tt, many, few)
+		}
+	}
+}
+
+// TestReducingGap checks that resizes with a reducing gap are a box average to
+// the size the gap gives followed by the filter, or a single resize when they
+// do not reduce, the same with and without SIMD.
+func TestReducingGap(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	sizes := []struct{ input, output int }{{1000, 37}, {640, 100}, {99, 10}, {64, 3}, {4000, 1}, {50, 30}, {17, 8}}
+	for _, s := range sizes {
+		for _, gap := range []float64{1, 2, 2.5, 3, math.Inf(1)} {
+			for _, filter := range []Filter{Bilinear(), Lanczos(3), Box(), Nearest(), CustomBicubic(1.0/3, 1.0/3)} {
+				for _, mode := range []struct {
+					vertical, interlaced bool
+					pack, depth          int
+				}{{false, false, 1, 8}, {false, false, 4, 8}, {false, false, 3, 16}, {true, false, 2, 8}, {true, true, 1, 16}} {
+					cfg := ResizerConfig{Input: s.input, Output: s.output, Vertical: mode.vertical, Interlaced: mode.interlaced, Pack: mode.pack, Depth: mode.depth, Threads: 3}
+					what := fmt.Sprintf("%v gap=%v %+v", filter, gap, cfg)
+					field := bin(mode.interlaced)
+					// the size of the box average, if any
+					mid := 0
+					if n := int(float64(s.input) / float64(s.output) / gap); n >= 2 && (s.input+n-1)/n>>field >= 2 && filter != Nearest() && filter != Box() {
+						mid = (s.input + n - 1) / n
+					}
+					bpp := mode.pack * mode.depth / 8
+					rows := 5
+					width, height, dw, dh, mw, mh := s.input, rows, s.output, rows, mid, rows
+					if mode.vertical {
+						width, height, dw, dh, mw, mh = rows, s.input, rows, s.output, rows, mid
+					}
+					src := make([]byte, width*height*bpp)
+					rng.Read(src)
+					want := make([]byte, dw*dh*bpp)
+					if mid == 0 {
+						r, err := NewResizer(&cfg, filter)
+						expect(t, err, nil)
+						r.Resize(want, src, width, height, dw*bpp, width*bpp)
+					} else {
+						step := cfg
+						step.Output = mid
+						r, err := NewResizer(&step, Box())
+						expect(t, err, nil)
+						buf := make([]byte, mw*mh*bpp)
+						r.Resize(buf, src, width, height, mw*bpp, width*bpp)
+						step.Input, step.Output = mid, s.output
+						r, err = NewResizer(&step, filter)
+						expect(t, err, nil)
+						r.Resize(want, buf, mw, mh, dw*bpp, mw*bpp)
+					}
+					for _, simd := range []bool{true, false} {
+						c := cfg
+						c.ReducingGap = gap
+						c.DisableSIMD = !simd
+						r, err := NewResizer(&c, filter)
+						expect(t, err, nil)
+						expect(t, r.reduce != nil, mid != 0)
+						got := make([]byte, dw*dh*bpp)
+						r.Resize(got, src, width, height, dw*bpp, width*bpp)
+						if !bytes.Equal(got, want) {
+							t.Fatalf("%v simd=%v: output differs from the two steps", what, simd)
+						}
+					}
+				}
+			}
+		}
+	}
+	for _, gap := range []float64{0.5, -1, math.NaN(), math.Inf(-1)} {
+		_, err := NewResizer(&ResizerConfig{Input: 100, Output: 10, ReducingGap: gap}, Bilinear())
+		if !errors.Is(err, ErrInvalidDescriptor) {
+			t.Errorf("gap=%v NewResizer: got %v, want ErrInvalidDescriptor", gap, err)
+		}
+		cfg := &ConverterConfig{
+			Input:       Descriptor{Rect: image.Rect(0, 0, 8, 8), Ratio: Ratio444, Pack: 1, Planes: 1},
+			Output:      Descriptor{Rect: image.Rect(0, 0, 8, 8), Ratio: Ratio444, Pack: 1, Planes: 1},
+			ReducingGap: gap,
+		}
+		if _, err := NewConverter(cfg, Bilinear()); !errors.Is(err, ErrInvalidDescriptor) {
+			t.Errorf("gap=%v NewConverter: got %v, want ErrInvalidDescriptor", gap, err)
+		}
+	}
+}
+
+// TestReducingGapConvert checks the quality of conversions with a reducing gap
+// against single resizes, and concurrent conversions sharing the buffers.
+func TestReducingGapConvert(t *testing.T) {
+	yuv := readImage(t, "testdata/lenna.jpg")
+	for _, src := range []image.Image{yuv, toRGB(t, yuv)} {
+		for _, tt := range []struct {
+			size image.Point
+			gap  float64
+			psnr float64
+		}{{image.Pt(64, 64), 2, 45}, {image.Pt(64, 64), 3, 47}, {image.Pt(37, 100), 2, 45}, {image.Pt(20, 20), 1, 30}} {
+			ctor := func(r image.Rectangle) image.Image { return image.NewRGBA(r) }
+			if _, ok := src.(*image.YCbCr); ok {
+				ctor = func(r image.Rectangle) image.Image { return image.NewYCbCr(r, image.YCbCrSubsampleRatio420) }
+			}
+			ref := newImage(t, ctor, image.Rectangle{Max: tt.size})
+			convert(t, ref, src, true, false, Lanczos(3))
+			var outs [][]byte
+			for _, simd := range []bool{true, false} {
+				dst := newImage(t, ctor, image.Rectangle{Max: tt.size})
+				c := prepare(t, dst, src, simd, false, Lanczos(3), 0, func(cfg *ConverterConfig) { cfg.ReducingGap = tt.gap })
+				dsts := make([]image.Image, 4)
+				var wg sync.WaitGroup
+				for i := range dsts {
+					dsts[i] = newImage(t, ctor, image.Rectangle{Max: tt.size})
+					wg.Go(func() {
+						if err := c.Convert(dsts[i], src); err != nil {
+							t.Error(err)
+						}
+					})
+				}
+				wg.Wait()
+				for _, dst := range dsts {
+					outs = append(outs, imageBytes(dst))
+				}
+				psnrs := psnr(t, ref, dsts[0])
+				t.Logf("%T to %v gap=%v simd=%v: psnr %.1f", src, tt.size, tt.gap, simd, psnrs)
+				for i, v := range psnrs {
+					if v < tt.psnr {
+						t.Errorf("%T to %v gap=%v simd=%v: plane %v psnr %.1f, want at least %v", src, tt.size, tt.gap, simd, i, v, tt.psnr)
+					}
+				}
+			}
+			for _, out := range outs[1:] {
+				if !bytes.Equal(out, outs[0]) {
+					t.Errorf("%T to %v gap=%v: outputs differ", src, tt.size, tt.gap)
+				}
+			}
 		}
 	}
 }

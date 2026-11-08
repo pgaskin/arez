@@ -27,6 +27,7 @@ New features:
   - Slightly faster on amd64.
   - Supports SIMD on arm64 and wasm.
   - Supports nearest neighbour, box, and fractional lanczos filters.
+  - Supports faster approximate large downscales (like Pillow's [reducing_gap]).
   - Supports Alpha, CMYK, NYCbCrA, Gray16, Alpha16, RGBA64, and NRGBA64 images.
   - Supports premultiplying alpha for NRGBA, NRGBA64, and NYCbCrA.
   - Supports rows larger than 32767 bytes (i.e., 8192 pixels RGBA).
@@ -53,5 +54,7 @@ error otherwise).
 I used Claude Fable 5.1 to help port and verify parts of the SIMD code (it's a
 lot of tedious and mostly mechanical work), write the tests, and help find/test
 micro-optimizations, but the rest is mostly done by hand.
+
+[reducing_gap]: https://pillow.readthedocs.io/en/latest/reference/Image.html#PIL.Image.Image.resize
 */
 package arez

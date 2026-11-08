@@ -23,6 +23,7 @@ Go image resizing library with amd64/arm64/wasm SIMD support. Based on [`rez`](h
 - Requires Go 1.27 or later.
 - Slightly faster on amd64.
 - Supports nearest neighbour, box, and fractional lanczos filters.
+- Supports faster approximate large downscales (like Pillow's [`reducing_gap`](https://pillow.readthedocs.io/en/latest/reference/Image.html#PIL.Image.Image.resize)).
 - Supports SIMD on arm64 and wasm.
 - Supports `Alpha`, `CMYK`, `NYCbCrA`, `Gray16`, `Alpha16`, `RGBA64`, and `NRGBA64` images.
 - Supports premultiplying alpha for `NRGBA`, `NRGBA64`, and `NYCbCrA`.

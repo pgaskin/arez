@@ -22,8 +22,8 @@ var (
 	ErrUnsupportedImage = errors.New("arez: unsupported image")
 
 	// ErrInvalidDescriptor is returned by [Descriptor.Check], by [NewConverter]
-	// for an invalid input or output descriptor, and by [NewResizer] for an
-	// invalid depth or pack.
+	// for an invalid input or output descriptor or reducing gap, and by
+	// [NewResizer] for an invalid depth, pack or reducing gap.
 	ErrInvalidDescriptor = errors.New("arez: invalid descriptor")
 
 	// ErrIncompatible is returned when the input and output of a conversion
@@ -232,6 +232,7 @@ type ConverterConfig struct {
 	Threads          int        // goroutines per plane, <= 0 for GOMAXPROCS
 	DisableSIMD      bool       // only use the non-accelerated Go implementation
 	PremultiplyAlpha bool       // premultiply straight images before filtering
+	ReducingGap      float64    // average large downscales first, see [ResizerConfig] (0 disables it)
 }
 
 const (
@@ -330,6 +331,9 @@ func NewConverter(cfg *ConverterConfig, filter Filter) (*Converter, error) {
 	if err != nil {
 		return nil, err
 	}
+	if g := cfg.ReducingGap; g != 0 && !(g >= 1) {
+		return nil, fmt.Errorf("%w: reducing gap %v", ErrInvalidDescriptor, g)
+	}
 	ctx := &Converter{
 		cfg: *cfg,
 	}
@@ -394,6 +398,7 @@ func NewConverter(cfg *ConverterConfig, filter Filter) (*Converter, error) {
 					Pack:        cfg.Input.Pack,
 					Threads:     threads,
 					DisableSIMD: cfg.DisableSIMD,
+					ReducingGap: cfg.ReducingGap,
 				}, filter)
 				if err != nil {
 					errs[idx][0] = err
@@ -414,6 +419,7 @@ func NewConverter(cfg *ConverterConfig, filter Filter) (*Converter, error) {
 					Pack:        cfg.Output.Pack,
 					Threads:     threads,
 					DisableSIMD: cfg.DisableSIMD,
+					ReducingGap: cfg.ReducingGap,
 				}, filter)
 				if err != nil {
 					errs[idx][1] = err
