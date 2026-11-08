@@ -21,7 +21,7 @@ var rezFilters = map[string]rez.Filter{
 }
 
 // TestRez checks that resized images are bit-identical when resized with the
-// original github.com/bamiaux/rez.
+// original github.com/bamiaux/rez, for the filters it has.
 func TestRez(t *testing.T) {
 	images, err := testImages()
 	if err != nil {
@@ -31,7 +31,8 @@ func TestRez(t *testing.T) {
 		for _, f := range filters {
 			rf, ok := rezFilters[f.name]
 			if !ok {
-				t.Fatalf("no rez filter for %s", f.name)
+				t.Logf("skipping %s, which rez does not have", f.name)
+				continue
 			}
 			for _, ti := range images {
 				src, err := cropImage(ti.img, op.crop)

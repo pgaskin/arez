@@ -42,6 +42,8 @@ func TestFilterString(t *testing.T) {
 		{CustomBicubic(1, 0), "bicubic(b=1, c=0)", "arez.CustomBicubic(1, 0)"},
 		{Lanczos(3), "lanczos(a=3)", "arez.Lanczos(3)"},
 		{Lanczos(2.5), "lanczos(a=2.5)", "arez.Lanczos(2.5)"},
+		{Nearest(), "nearest", "arez.Nearest()"},
+		{Box(), "box", "arez.Box()"},
 	} {
 		expect(t, fmt.Sprint(tt.filter), tt.str)
 		expect(t, fmt.Sprintf("%#v", tt.filter), tt.gostr)
@@ -50,6 +52,41 @@ func TestFilterString(t *testing.T) {
 	expect(t, filterString(supportFilter{1}), "arez.supportFilter")
 	expect(t, filterString(&supportFilter{0.5}), "arez.supportFilter")
 	expect(t, filterString((*supportFilter)(nil)), "arez.supportFilter")
+}
+
+// TestNearestBox checks the outputs of the scale-dependent filters, including
+// output pixels with centers exactly between two input pixels.
+func TestNearestBox(t *testing.T) {
+	for _, tt := range []struct {
+		filter Filter
+		src    []byte
+		out    int
+		want   []byte
+	}{
+		{Nearest(), []byte{10, 20}, 3, []byte{10, 10, 20}},
+		{Nearest(), []byte{0, 10, 20, 30, 40, 50, 60, 70}, 3, []byte{10, 30, 60}},
+		{Nearest(), []byte{0, 10, 20, 30, 40, 50, 60, 70}, 2, []byte{10, 50}},
+		{Nearest(), []byte{0, 10, 20, 30, 40, 50, 60, 70}, 16, []byte{0, 0, 10, 10, 20, 20, 30, 30, 40, 40, 50, 50, 60, 60, 70, 70}},
+		{Box(), []byte{10, 20}, 3, []byte{10, 15, 20}},
+		{Box(), []byte{0, 10, 20, 30, 40, 50, 60, 70}, 2, []byte{15, 55}},
+		{Box(), []byte{0, 30, 60, 90, 120, 150}, 4, []byte{10, 50, 100, 140}},
+		{Box(), []byte{0, 10, 20, 30, 40, 50, 60, 70}, 16, []byte{0, 0, 10, 10, 20, 20, 30, 30, 40, 40, 50, 50, 60, 60, 70, 70}},
+		{Box(), []byte{0, 30, 60, 90}, 6, []byte{0, 15, 30, 60, 75, 90}},
+	} {
+		for _, vertical := range []bool{false, true} {
+			r, err := NewResizer(&ResizerConfig{Input: len(tt.src), Output: tt.out, Vertical: vertical}, tt.filter)
+			expect(t, err, nil)
+			dst := make([]byte, tt.out)
+			if vertical {
+				r.Resize(dst, tt.src, 1, len(tt.src), 1, 1)
+			} else {
+				r.Resize(dst, tt.src, len(tt.src), 1, tt.out, len(tt.src))
+			}
+			if !bytes.Equal(dst, tt.want) {
+				t.Errorf("%v %v to %v vertical=%v: got %v, want %v", tt.filter, len(tt.src), tt.out, vertical, dst, tt.want)
+			}
+		}
+	}
 }
 
 // TestFractionalSupport checks the kernel sizes of filters with a support

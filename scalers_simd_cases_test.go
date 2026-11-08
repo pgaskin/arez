@@ -279,7 +279,7 @@ func checkResizeDispatch(t *testing.T, cfg ResizerConfig, filter Filter) {
 // dispatched scalers with the Go ones.
 func TestSIMDDispatchOne(t *testing.T) {
 	for _, input := range []int{2, 3, 5, 16, 17, 64, 100, 1000, 3840} {
-		for _, filter := range []Filter{Bilinear(), Bicubic(), Lanczos(3)} {
+		for _, filter := range []Filter{Bilinear(), Bicubic(), Lanczos(3), Nearest(), Box()} {
 			for pack := 1; pack <= 4; pack++ {
 				for _, depth := range []int{8, 16} {
 					for _, vertical := range []bool{false, true} {
@@ -299,7 +299,7 @@ func TestSIMDDispatchPacks(t *testing.T) {
 	i := 0
 	for pack := 5; pack <= 16; pack++ {
 		for _, depth := range []int{8, 16} {
-			for _, filter := range []Filter{Bilinear(), Bicubic(), Lanczos(3)} {
+			for _, filter := range []Filter{Bilinear(), Bicubic(), Lanczos(3), Nearest(), Box()} {
 				for _, s := range sizes {
 					for _, mode := range []struct{ vertical, interlaced bool }{{false, false}, {true, false}, {true, true}} {
 						i++

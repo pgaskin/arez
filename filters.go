@@ -23,6 +23,16 @@ type Filter interface {
 	Get(dx float64) float64
 }
 
+// pixelFilter is implemented by filters whose weights depend on the scale of
+// the resize.
+//
+// TODO: should probably make Filter methods take a scale param or something
+// like that later
+type pixelFilter interface {
+	pixelSupport(scale float64) float64
+	pixelWeight(dx, scale float64) float64
+}
+
 var pkg, _, _ = strings.Cut(reflect.TypeFor[bilinear]().String(), ".") // arez
 
 type bilinear struct{}
@@ -123,6 +133,68 @@ func (f lanczos) Get(x float64) float64 {
 // or 3.
 func Lanczos(alpha float64) Filter {
 	return lanczos{alpha: alpha}
+}
+
+type nearest struct{}
+
+func (nearest) Support() float64 { return 0.5 }
+func (nearest) String() string   { return "nearest" }
+func (nearest) GoString() string { return pkg + ".Nearest()" }
+
+func (nearest) Get(x float64) float64 {
+	if x < 0.5 {
+		return 1
+	}
+	return 0
+}
+
+func (nearest) pixelSupport(float64) float64 { return 0.5 }
+
+func (nearest) pixelWeight(dx, _ float64) float64 {
+	if dx > -0.5 && dx <= 0.5 {
+		return 1
+	}
+	return 0
+}
+
+// Nearest returns a nearest-neighbor filter.
+//
+// Note: The Get/Support functions on this filter are not used and will result
+// in suboptimal results. The returned filter currently implements a private
+// interface for scale-aware filters.
+func Nearest() Filter {
+	return nearest{}
+}
+
+type box struct{}
+
+func (box) Support() float64 { return 0.5 }
+func (box) String() string   { return "box" }
+func (box) GoString() string { return pkg + ".Box()" }
+
+func (box) Get(x float64) float64 {
+	if x < 0.5 {
+		return 1
+	}
+	return 0
+}
+
+func (box) pixelSupport(scale float64) float64 { return 0.5/scale + 0.5 }
+
+func (box) pixelWeight(dx, scale float64) float64 {
+	// overlap of the output pixel, 1/scale input pixels wide, and the input
+	// pixel
+	w, d := 0.5/scale, math.Abs(dx)
+	return max(0, min(w, 0.5-d)+min(w, 0.5+d))
+}
+
+// Box returns a box filter.
+//
+// Note: The Get/Support functions on this filter are not used and will result
+// in suboptimal results. The returned filter currently implements a private
+// interface for scale-aware filters.
+func Box() Filter {
+	return box{}
 }
 
 // filterString returns the name of filter for errors, its String if it

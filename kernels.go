@@ -34,6 +34,10 @@ func makeDoubleKernel(cfg *ResizerConfig, filter Filter, field, idx uint) ([]int
 	scale := float64(cfg.Output) / float64(cfg.Input)
 	step := min(1, scale)
 	support := filter.Support() / step
+	pf, isPixel := filter.(pixelFilter)
+	if isPixel {
+		support = pf.pixelSupport(scale)
+	}
 	taps := int(min(math.Ceil(support), float64(cfg.Input))) * 2
 	taps = min(taps, (cfg.Input>>field)&^1)
 	offsets := make([]int, cfg.Output)
@@ -55,7 +59,12 @@ func makeDoubleKernel(cfg *ResizerConfig, filter Filter, field, idx uint) ([]int
 			if field != 0 && idx^uint(src&1) != 0 {
 				continue
 			}
-			weight := filter.Get(math.Abs(xmid-float64(src)) * step)
+			var weight float64
+			if isPixel {
+				weight = pf.pixelWeight((xmid-float64(src))/float64(1+field), scale)
+			} else {
+				weight = filter.Get(math.Abs(xmid-float64(src)) * step)
+			}
 			src = clip(src, x, cfg.Input-1) - x
 			src >>= field
 			weights[i*taps+src] += weight

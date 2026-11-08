@@ -37,6 +37,8 @@ var filters = []struct {
 	name   string
 	filter arez.Filter
 }{
+	{"Nearest()", arez.Nearest()},
+	{"Box()", arez.Box()},
 	{"Bilinear()", arez.Bilinear()},
 	{"Bicubic()", arez.Bicubic()},
 	{"CustomBicubic(1/3, 1/3)", arez.CustomBicubic(1.0/3, 1.0/3)},

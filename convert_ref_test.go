@@ -153,7 +153,7 @@ type convertCase struct {
 	seed        int64
 }
 
-var convertFilters = []Filter{Bilinear(), Bicubic(), Lanczos(3), Lanczos(4)}
+var convertFilters = []Filter{Bilinear(), Bicubic(), Lanczos(3), Lanczos(4), Nearest(), Box()}
 
 func subImageEnding(tb testing.TB, ctor func(image.Rectangle) image.Image, w, h, px, py, ox, oy int) image.Image {
 	tb.Helper()

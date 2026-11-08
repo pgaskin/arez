@@ -144,7 +144,7 @@ func FuzzGuardedResize(f *testing.F) {
 	})
 }
 
-var guardedFilters = append(filters, Lanczos(4), CustomBicubic(1.0/3, 1.0/3))
+var guardedFilters = append(filters, Lanczos(4), CustomBicubic(1.0/3, 1.0/3), Nearest(), Box())
 
 const (
 	pitchSlack   = iota // rows sslack bytes longer than their pixels
