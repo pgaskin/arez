@@ -193,6 +193,10 @@ func chromaSize(lo, hi, n int) int {
 	return (hi+n-1)/n - lo/n
 }
 
+// ConverterConfig contains configuration for a [Converter].
+//
+// Additional options may be added in future versions, but the zero value will
+// always have the same behaviour within a major version.
 type ConverterConfig struct {
 	Input            Descriptor // input format and size
 	Output           Descriptor // output format and size
