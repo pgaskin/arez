@@ -31,10 +31,11 @@ var (
 	// types.
 	ErrIncompatible = errors.New("arez: incompatible formats")
 
-	// ErrTooSmall is returned an input or output image is too small to resize.
+	// ErrTooSmall is returned when an input or output image is too small to
+	// resize.
 	ErrTooSmall = errors.New("arez: size too small")
 
-	// ErrTooLarge is returned with the width/height of an image is too large
+	// ErrTooLarge is returned when the width/height of an image is too large
 	// and would overflow.
 	ErrTooLarge = errors.New("arez: size too large")
 

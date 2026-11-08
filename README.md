@@ -11,7 +11,7 @@ Go image resizing library with amd64/arm64/wasm SIMD support. Based on [`rez`](h
 #### Original
 
 - Supports `YCbCr`, `Gray`, `RGBA`, and `NRGBA` images.
-- Supports `YcbCr` subsample ratio conversions.
+- Supports `YCbCr` subsample ratio conversions.
 - Supports interlaced resizes.
 - Supports parallel resizing.
 - Supports SIMD on amd64.
@@ -56,11 +56,11 @@ You can also use `arez.NewResizer` to resize raw image data.
 
 Paletted images and other image.Image implementations are not supported and need to be converted first (e.g., with [`image/draw`](https://pkg.go.dev/image/draw)).
 
-Channels are filtered independently, which is correct for for premultiplied alpha (RGBA, RGBA64), but may bleed transparent colors into visible pixels for images with straight alpha (NRGBA, NRGBA64, NYCbCrA).
+Channels are filtered independently, which is correct for premultiplied alpha (RGBA, RGBA64), but may bleed transparent colors into visible pixels for images with straight alpha (NRGBA, NRGBA64, NYCbCrA).
 
 By default, images are resized in parallel with `GOMAXPROCS` slices.
 
-Input rows are limited to MaxRowBytes bytes (8191 RGBA or 4095 RGBA64 pixels) and interlaced inputs need at least 2 rows per field in every plane (NewConverter returns an error otherwise).
+Input planes need at least 2 pixels in each direction (2 rows per field when interlaced), and rows are limited to `2^31-1` bytes (`NewConverter` returns an error otherwise).
 
 I used Claude Fable 5.1 to help port and verify parts of the SIMD code (it's a lot of tedious and mostly mechanical work), write the tests, and help find/test micro-optimizations, but the rest is mostly done by hand.
 

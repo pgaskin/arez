@@ -5,7 +5,7 @@
 /*
 Package arez resizes images, using SIMD where available.
 
-It is based on on github.com/bamiaux/rez, but rewritten to use simd/archsimd,
+It is based on github.com/bamiaux/rez, but rewritten to use simd/archsimd,
 with amd64/arm64/wasm support, more image formats, and a modernized API.
 
 As of Go 1.27, SIMD requires GOEXPERIMENT=simd. If SIMD is not available or
@@ -14,7 +14,7 @@ disabled, regular Go scalers are used, but the output is still bit-identical.
 Features:
 
   - Supports YCbCr, Gray, RGBA, and NRGBA images.
-  - Supports YcbCr subsample ratio conversions.
+  - Supports YCbCr subsample ratio conversions.
   - Supports interlaced resizes.
   - Supports parallel resizing.
   - Supports SIMD on amd64.
@@ -39,15 +39,15 @@ New features:
 Paletted images and other image.Image implementations are not supported and need
 to be converted first (e.g., with image/draw).
 
-Channels are filtered independently, which is correct for for premultiplied
+Channels are filtered independently, which is correct for premultiplied
 alpha (RGBA, RGBA64), but may bleed transparent colors into visible pixels for
 images with straight alpha (NRGBA, NRGBA64, NYCbCrA).
 
 By default, images are resized in parallel with GOMAXPROCS slices.
 
-Input rows are limited to MaxRowBytes bytes (8191 RGBA or 4095 RGBA64 pixels)
-and interlaced inputs need at least 2 rows per field in every plane
-(NewConverter returns an error otherwise).
+Input planes need at least 2 pixels in each direction (2 rows per field when
+interlaced), and rows are limited to 2^31-1 bytes (NewConverter returns an
+error otherwise).
 
 I used Claude Fable 5.1 to help port and verify parts of the SIMD code (it's a
 lot of tedious and mostly mechanical work), write the tests, and help find/test
