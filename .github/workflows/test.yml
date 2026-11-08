@@ -109,6 +109,8 @@ jobs:
           cache-dependency-path: preview/go.sum
       - run: go mod download
       - run: go mod verify
+      - run: go vet ./...
+      - run: go test -v ./... # compare against github.com/bamiaux/rez
       - run: go run . && git add -N . && git diff --exit-code # ensure the preview images are up-to-date
 
   api:

@@ -28,6 +28,30 @@ func px(v int) int {
 	return int(math.Round(float64(v) * scale))
 }
 
+type testImage struct {
+	name string
+	img  image.Image
+}
+
+// generatedImages returns the test images other than the photo.
+func generatedImages() []testImage {
+	return []testImage{
+		{"text", textImage()},
+		{"rings", ringsImage()},
+		{"star", starImage()},
+		{"edges", edgesImage()},
+	}
+}
+
+// testImages returns all test images.
+func testImages() ([]testImage, error) {
+	photo, err := photoImage()
+	if err != nil {
+		return nil, err
+	}
+	return append(generatedImages(), testImage{"photo", photo}), nil
+}
+
 const lorem = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat."
 
 // textImage returns lorem ipsum at decreasing sizes, black on white.

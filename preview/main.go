@@ -76,21 +76,11 @@ func main() {
 }
 
 func run() error {
-	type testImage struct {
-		name string
-		img  image.Image
-	}
-	images := []testImage{
-		{"text", textImage()},
-		{"rings", ringsImage()},
-		{"star", starImage()},
-		{"edges", edgesImage()},
-	}
-
+	generated := generatedImages()
 	if err := os.MkdirAll("images", 0777); err != nil {
 		return err
 	}
-	for _, t := range images {
+	for _, t := range generated {
 		if err := encode(filepath.Join("images", t.name+".png"), t.img); err != nil {
 			return err
 		}
@@ -100,7 +90,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	images = append(images, testImage{"photo", photo})
+	images := append(generated, testImage{"photo", photo})
 
 	type row struct {
 		name, sub string
@@ -176,26 +166,44 @@ func run() error {
 // resize resizes the center crop x crop pixels of img to size x size pixels,
 // keeping the image type.
 func resize(img image.Image, crop, size int, filter arez.Filter) (image.Image, error) {
+	src, err := cropImage(img, crop)
+	if err != nil {
+		return nil, err
+	}
+	dst := newImage(src, size)
+	if err := arez.Convert(dst, src, filter); err != nil {
+		return nil, err
+	}
+	return dst, nil
+}
+
+// cropImage returns the center crop x crop pixels of img.
+func cropImage(img image.Image, crop int) (image.Image, error) {
 	b := img.Bounds()
 	c := b.Min.Add(image.Pt((b.Dx()-crop)/2, (b.Dy()-crop)/2))
 	r := image.Rectangle{c, c.Add(image.Pt(crop, crop))}
 	if !r.In(b) {
 		return nil, fmt.Errorf("crop %v outside %v", r, b)
 	}
-	out := image.Rect(0, 0, size, size)
-	var src, dst image.Image
 	switch img := img.(type) {
 	case *image.Gray:
-		src, dst = img.SubImage(r), image.NewGray(out)
+		return img.SubImage(r), nil
 	case *image.RGBA:
-		src, dst = img.SubImage(r), image.NewRGBA(out)
-	default:
-		return nil, fmt.Errorf("unsupported image type %T", img)
+		return img.SubImage(r), nil
 	}
-	if err := arez.Convert(dst, src, filter); err != nil {
-		return nil, err
+	return nil, fmt.Errorf("unsupported image type %T", img)
+}
+
+// newImage returns a size x size image of the same type as img.
+func newImage(img image.Image, size int) image.Image {
+	r := image.Rect(0, 0, size, size)
+	switch img.(type) {
+	case *image.Gray:
+		return image.NewGray(r)
+	case *image.RGBA:
+		return image.NewRGBA(r)
 	}
-	return dst, nil
+	panic(fmt.Sprintf("unsupported image type %T", img))
 }
 
 func decode(name string) (image.Image, error) {
