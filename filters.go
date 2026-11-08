@@ -105,6 +105,6 @@ func (f lanczos) Get(x float64) float64 {
 
 // Lanczos returns a Lanczos filter with a support of alpha pixels, commonly 2
 // or 3.
-func Lanczos(alpha int) Filter {
-	return lanczos{alpha: float64(alpha)}
+func Lanczos(alpha float64) Filter {
+	return lanczos{alpha: alpha}
 }

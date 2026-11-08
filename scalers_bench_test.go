@@ -24,7 +24,7 @@ func benchScaler(b *testing.B, simd, vertical bool, taps int) {
 	if !vertical {
 		dp *= 2
 	}
-	resizer, err := NewResizer(&cfg, Lanczos(taps>>1))
+	resizer, err := NewResizer(&cfg, Lanczos(float64(taps>>1)))
 	expect(b, err, nil)
 	for b.Loop() {
 		resizer.Resize(dst, src, n, n, dp, n)

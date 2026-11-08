@@ -14,7 +14,7 @@ import (
 )
 
 func TestFilterSupport(t *testing.T) {
-	for _, f := range append(filters, Lanczos(4), CustomBicubic(1.0/3, 1.0/3)) {
+	for _, f := range append(filters, Lanczos(4), Lanczos(2.5), CustomBicubic(1.0/3, 1.0/3)) {
 		support := f.Support()
 		// lanczos is sin(pi*alpha)*..., about 1e-33 rather than 0
 		expect(t, math.Abs(f.Get(support)) < 1e-9, true)
