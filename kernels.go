@@ -33,7 +33,7 @@ func clip(v, lo, hi int) int {
 func makeDoubleKernel(cfg *ResizerConfig, filter Filter, field, idx uint) ([]int, []float64, []float64, int, int) {
 	scale := float64(cfg.Output) / float64(cfg.Input)
 	step := min(1, scale)
-	support := float64(filter.Support()) / step
+	support := filter.Support() / step
 	taps := int(min(math.Ceil(support), float64(cfg.Input))) * 2
 	taps = min(taps, (cfg.Input>>field)&^1)
 	offsets := make([]int, cfg.Output)
@@ -113,8 +113,8 @@ func makeIntegerKernel(taps, size int, cof, sums []float64, pos []int, field, id
 // horizontal ones are bytes, vertical ones are steps between output rows, both
 // below the input size checkResize bounds.
 func makeKernel(cfg *ResizerConfig, filter Filter, idx uint) (kernel, error) {
-	if filter.Support() < 1 {
-		return kernel{}, fmt.Errorf("%w: %v has a support of %v", ErrInvalidFilter, filter.Name(), filter.Support())
+	if s := filter.Support(); !(s > 0) || math.IsInf(s, 1) {
+		return kernel{}, fmt.Errorf("%w: %v has a support of %v", ErrInvalidFilter, filter.Name(), s)
 	}
 	field := bin(cfg.Interlaced)
 	pos, sums, cof, taps, size := makeDoubleKernel(cfg, filter, field, idx)

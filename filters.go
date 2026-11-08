@@ -10,8 +10,9 @@ import (
 // Filter is an interpolation filter, which gives the weights of the input
 // pixels around an output pixel. Filters must be safe for concurrent use.
 type Filter interface {
-	// Support returns the radius of the filter.
-	Support() int
+	// Support returns the radius of the filter, which must be positive and
+	// finite.
+	Support() float64
 	// Name returns the name of the filter.
 	Name() string
 	// Get returns the weight of an input pixel at the distance dx from the
@@ -23,8 +24,8 @@ type Filter interface {
 
 type bilinear struct{}
 
-func (bilinear) Support() int { return 1 }
-func (bilinear) Name() string { return "bilinear" }
+func (bilinear) Support() float64 { return 1 }
+func (bilinear) Name() string     { return "bilinear" }
 
 func (bilinear) Get(x float64) float64 {
 	if x < 1 {
@@ -42,7 +43,7 @@ type bicubic struct {
 	a, b, c, d, e, f, g float64
 }
 
-func (*bicubic) Support() int {
+func (*bicubic) Support() float64 {
 	return 2
 }
 
@@ -83,8 +84,8 @@ type lanczos struct {
 	alpha float64
 }
 
-func (f lanczos) Support() int {
-	return int(f.alpha)
+func (f lanczos) Support() float64 {
+	return f.alpha
 }
 
 func (lanczos) Name() string {

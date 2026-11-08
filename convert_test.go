@@ -836,6 +836,14 @@ func TestErrors(t *testing.T) {
 			return err
 		}, ErrInvalidFilter},
 		{"zero support", func() error { _, err := NewResizer(&ResizerConfig{Input: 8, Output: 16}, supportFilter{0}); return err }, ErrInvalidFilter},
+		{"nan support", func() error {
+			_, err := NewResizer(&ResizerConfig{Input: 8, Output: 16}, supportFilter{math.NaN()})
+			return err
+		}, ErrInvalidFilter},
+		{"inf support", func() error {
+			_, err := NewResizer(&ResizerConfig{Input: 8, Output: 16}, supportFilter{math.Inf(1)})
+			return err
+		}, ErrInvalidFilter},
 		{"nil filter resize", func() error { _, err := NewResizer(&ResizerConfig{Input: 8, Output: 16}, nil); return err }, ErrInvalidFilter},
 		{"nil filter converter", func() error {
 			return newConverter(cfg(g8, Descriptor{Rect: image.Rect(0, 0, 16, 16), Ratio: Ratio444, Pack: 1, Planes: 1}, false), nil)

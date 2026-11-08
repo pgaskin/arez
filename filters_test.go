@@ -17,13 +17,13 @@ func TestFilterSupport(t *testing.T) {
 	for _, f := range append(filters, Lanczos(4), CustomBicubic(1.0/3, 1.0/3)) {
 		support := f.Support()
 		// lanczos is sin(pi*alpha)*..., about 1e-33 rather than 0
-		expect(t, math.Abs(f.Get(float64(support))) < 1e-9, true)
-		expect(t, math.Abs(f.Get(float64(support)-0.25)) > 1e-3, true)
+		expect(t, math.Abs(f.Get(support)) < 1e-9, true)
+		expect(t, math.Abs(f.Get(support-0.25)) > 1e-3, true)
 		for _, tt := range []struct{ input, output int }{{100, 200}, {100, 100}, {300, 100}, {250, 100}, {1920, 640}} {
 			k, err := makeKernel(&ResizerConfig{Input: tt.input, Output: tt.output, Pack: 1, Depth: 8}, f, 0)
 			expect(t, err, nil)
 			r := max(1, float64(tt.input)/float64(tt.output))
-			expect(t, k.size, 2*int(math.Ceil(r*float64(support))))
+			expect(t, k.size, 2*int(math.Ceil(r*support)))
 		}
 	}
 	expect(t, Bilinear().Support(), 1)
@@ -31,9 +31,28 @@ func TestFilterSupport(t *testing.T) {
 	expect(t, Lanczos(3).Support(), 3)
 }
 
+// TestFractionalSupport checks the kernel sizes of filters with a support
+// between whole pixels, which round up to whole taps on each side.
+func TestFractionalSupport(t *testing.T) {
+	src := []byte{64, 64, 64, 64, 64, 64, 64, 64}
+	for _, support := range []float64{0.25, 0.5, 1.5, 2.25} {
+		for _, out := range []int{16, 8, 5, 3} {
+			k, err := makeKernel(&ResizerConfig{Input: 8, Output: out, Pack: 1, Depth: 8}, supportFilter{support}, 0)
+			expect(t, err, nil)
+			r := max(1, 8/float64(out))
+			expect(t, k.size, min(2*int(math.Ceil(r*support)), 8))
+			rz, err := NewResizer(&ResizerConfig{Input: 8, Output: out}, supportFilter{support})
+			expect(t, err, nil)
+			dst := make([]byte, out)
+			rz.Resize(dst, src, 8, 1, out, 8)
+			expect(t, string(dst), string(bytes.Repeat([]byte{64}, out)))
+		}
+	}
+}
+
 type constFilter struct{ weight float64 }
 
-func (constFilter) Support() int          { return 1 }
+func (constFilter) Support() float64      { return 1 }
 func (constFilter) Name() string          { return "const" }
 func (f constFilter) Get(float64) float64 { return f.weight }
 
@@ -42,8 +61,8 @@ func (f constFilter) Get(float64) float64 { return f.weight }
 // the fixed point coefficients overflow.
 type spikeFilter struct{}
 
-func (spikeFilter) Support() int { return 1 }
-func (spikeFilter) Name() string { return "spike" }
+func (spikeFilter) Support() float64 { return 1 }
+func (spikeFilter) Name() string     { return "spike" }
 func (spikeFilter) Get(x float64) float64 {
 	if x < 0.5 {
 		return 1000
@@ -52,10 +71,11 @@ func (spikeFilter) Get(x float64) float64 {
 }
 
 // supportFilter is a box filter of the given support, which NewResizer must
-// reject below 1 instead of allocating a kernel of negative size.
-type supportFilter struct{ support int }
+// reject unless positive and finite instead of allocating a kernel of negative
+// size.
+type supportFilter struct{ support float64 }
 
-func (f supportFilter) Support() int      { return f.support }
+func (f supportFilter) Support() float64  { return f.support }
 func (supportFilter) Name() string        { return "support" }
 func (supportFilter) Get(float64) float64 { return 1 }
 
@@ -87,7 +107,7 @@ func TestHugeSupport(t *testing.T) {
 
 type panicFilter struct{ value string }
 
-func (panicFilter) Support() int          { return 1 }
+func (panicFilter) Support() float64      { return 1 }
 func (panicFilter) Name() string          { return "panic" }
 func (f panicFilter) Get(float64) float64 { panic(f.value) }
 
