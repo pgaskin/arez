@@ -135,7 +135,7 @@ func testConvertWith(t *testing.T, rgb bool) {
 	for _, f := range filters {
 		for _, s := range sizes {
 			for _, interlaced := range []bool{false, true} {
-				name := fmt.Sprintf("%vx%v-%v-%v-%v", s.w, s.h, f.Name(), suffix, toInterlacedString(interlaced))
+				name := fmt.Sprintf("%vx%v-%v-%v-%v", s.w, s.h, filterString(f), suffix, toInterlacedString(interlaced))
 				var ref []refPlane
 				var outs [][]byte
 				for _, simd := range []bool{true, false} {
@@ -271,7 +271,7 @@ func runTestCaseWith(t *testing.T, tc *TestCase, simd bool, cycles int) image.Im
 		}
 		name := fmt.Sprintf("%v-%vx%v-%vx%v-%v-%v-%v-%v.png",
 			tc.dump, sb.Dx(), sb.Dy(), db.Dx(), db.Dy(), suffix,
-			toInterlacedString(tc.interlaced), simdSuffix, tc.filter.Name())
+			toInterlacedString(tc.interlaced), simdSuffix, filterString(tc.filter))
 		writeImage(t, name, src)
 	}
 	return src

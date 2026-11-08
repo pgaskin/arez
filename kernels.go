@@ -114,13 +114,13 @@ func makeIntegerKernel(taps, size int, cof, sums []float64, pos []int, field, id
 // below the input size checkResize bounds.
 func makeKernel(cfg *ResizerConfig, filter Filter, idx uint) (kernel, error) {
 	if s := filter.Support(); !(s > 0) || math.IsInf(s, 1) {
-		return kernel{}, fmt.Errorf("%w: %v has a support of %v", ErrInvalidFilter, filter.Name(), s)
+		return kernel{}, fmt.Errorf("%w: %v has a support of %v", ErrInvalidFilter, filterString(filter), s)
 	}
 	field := bin(cfg.Interlaced)
 	pos, sums, cof, taps, size := makeDoubleKernel(cfg, filter, field, idx)
 	coeffs, offsets, err := makeIntegerKernel(taps, size, cof, sums, pos, field, idx)
 	if err != nil {
-		return kernel{}, fmt.Errorf("%w: %v %v", ErrInvalidFilter, filter.Name(), err)
+		return kernel{}, fmt.Errorf("%w: %v %v", ErrInvalidFilter, filterString(filter), err)
 	}
 	if cfg.Vertical {
 		for i := len(offsets) - 1; i > 0; i-- {

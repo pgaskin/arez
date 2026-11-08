@@ -270,7 +270,7 @@ func checkResizeDispatch(t *testing.T, cfg ResizerConfig, filter Filter) {
 	expect(t, err, nil)
 	r.Resize(got, src, width, height, dp, sp)
 	if !bytes.Equal(want, got) {
-		t.Errorf("%v %+v: output differs from go", filter.Name(), cfg)
+		t.Errorf("%v %+v: output differs from go", filterString(filter), cfg)
 	}
 }
 

@@ -4,7 +4,10 @@
 package arez
 
 import (
+	"fmt"
 	"math"
+	"reflect"
+	"strings"
 )
 
 // Filter is an interpolation filter, which gives the weights of the input
@@ -13,8 +16,6 @@ type Filter interface {
 	// Support returns the radius of the filter, which must be positive and
 	// finite.
 	Support() float64
-	// Name returns the name of the filter.
-	Name() string
 	// Get returns the weight of an input pixel at the distance dx from the
 	// center of an output pixel, in input pixels when upscaling and in output
 	// pixels when downscaling. The weights of an output pixel are normalized by
@@ -22,10 +23,13 @@ type Filter interface {
 	Get(dx float64) float64
 }
 
+var pkg, _, _ = strings.Cut(reflect.TypeFor[bilinear]().String(), ".") // arez
+
 type bilinear struct{}
 
 func (bilinear) Support() float64 { return 1 }
-func (bilinear) Name() string     { return "bilinear" }
+func (bilinear) String() string   { return "bilinear" }
+func (bilinear) GoString() string { return pkg + ".Bilinear()" }
 
 func (bilinear) Get(x float64) float64 {
 	if x < 1 {
@@ -40,15 +44,23 @@ func Bilinear() Filter {
 }
 
 type bicubic struct {
-	a, b, c, d, e, f, g float64
+	a, b, c, d, e, f, g float64 // polynomial coefficients
+	pb, pc              float64 // parameters
 }
 
 func (*bicubic) Support() float64 {
 	return 2
 }
 
-func (*bicubic) Name() string {
-	return "bicubic"
+func (f *bicubic) String() string {
+	return fmt.Sprintf("bicubic(b=%g, c=%g)", f.pb, f.pc)
+}
+
+func (f *bicubic) GoString() string {
+	if f.pb == 0 && f.pc == 0.5 {
+		return pkg + ".Bicubic()"
+	}
+	return fmt.Sprintf("%s.CustomBicubic(%g, %g)", pkg, f.pb, f.pc)
 }
 
 func (f *bicubic) Get(x float64) float64 {
@@ -64,7 +76,7 @@ func (f *bicubic) Get(x float64) float64 {
 // b and c. For example, b = c = 1/3 is the filter Mitchell and Netravali
 // recommend, and b = 0, c = 0.5 the Catmull-Rom spline of [Bicubic].
 func CustomBicubic(b, c float64) Filter {
-	f := &bicubic{}
+	f := &bicubic{pb: b, pc: c}
 	f.a = 1 - b/3
 	f.b = -3 + 2*b + c
 	f.c = 2 - 3*b/2 - c
@@ -88,8 +100,12 @@ func (f lanczos) Support() float64 {
 	return f.alpha
 }
 
-func (lanczos) Name() string {
-	return "lanczos"
+func (f lanczos) String() string {
+	return fmt.Sprintf("lanczos(a=%g)", f.alpha)
+}
+
+func (f lanczos) GoString() string {
+	return fmt.Sprintf("%s.Lanczos(%g)", pkg, f.alpha)
 }
 
 func (f lanczos) Get(x float64) float64 {
@@ -107,4 +123,17 @@ func (f lanczos) Get(x float64) float64 {
 // or 3.
 func Lanczos(alpha float64) Filter {
 	return lanczos{alpha: alpha}
+}
+
+// filterString returns the name of filter for errors, its String if it
+// implements [fmt.Stringer], or its type otherwise.
+func filterString(filter Filter) string {
+	if s, ok := filter.(fmt.Stringer); ok {
+		return s.String()
+	}
+	t := reflect.TypeOf(filter)
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t.String()
 }

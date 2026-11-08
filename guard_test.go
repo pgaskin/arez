@@ -68,7 +68,7 @@ func TestGuardedConvert(t *testing.T) {
 				outs = append(outs, imageBytes(dst))
 			}
 			if len(outs) == 2 && !bytes.Equal(outs[0], outs[1]) {
-				t.Errorf("%v %v -> %v interlaced=%v %v threads=%v: simd differs from go", it.name, srcRect.Size(), dstRect.Size(), interlaced, filter.Name(), threads)
+				t.Errorf("%v %v -> %v interlaced=%v %v threads=%v: simd differs from go", it.name, srcRect.Size(), dstRect.Size(), interlaced, filterString(filter), threads)
 			}
 		}
 	}
@@ -180,7 +180,7 @@ func runGuardedResize(t testing.TB, c guardedResizeCase) {
 	case pitchZero:
 		sp = 0
 	}
-	what := fmt.Sprintf("%+v %v %vx%v sp=%v dp=%v", cfg, filter.Name(), width, height, sp, dp)
+	what := fmt.Sprintf("%+v %v %vx%v sp=%v dp=%v", cfg, filterString(filter), width, height, sp, dp)
 	src, freeSrc := guardAlloc(sp*(height-1) + width*bpp)
 	defer freeSrc()
 	rand.New(rand.NewSource(c.seed)).Read(src)

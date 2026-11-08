@@ -155,7 +155,7 @@ func TestSIMDEnabled(t *testing.T) {
 		k, err := makeKernel(&cfg, tt.filter, 0)
 		expect(t, err, nil)
 		if k.size != tt.taps || k.layout != tt.layout {
-			t.Errorf("%+v %v: got %v taps layout %v, want %v taps layout %v", cfg, tt.filter.Name(), k.size, k.layout, tt.taps, tt.layout)
+			t.Errorf("%+v %v: got %v taps layout %v, want %v taps layout %v", cfg, filterString(tt.filter), k.size, k.layout, tt.taps, tt.layout)
 		}
 		var got, want uintptr
 		if cfg.Vertical {

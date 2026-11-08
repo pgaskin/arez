@@ -30,6 +30,28 @@ func TestFilterSupport(t *testing.T) {
 	expect(t, Lanczos(3).Support(), 3)
 }
 
+func TestFilterString(t *testing.T) {
+	for _, tt := range []struct {
+		filter     Filter
+		str, gostr string
+	}{
+		{Bilinear(), "bilinear", "arez.Bilinear()"},
+		{Bicubic(), "bicubic(b=0, c=0.5)", "arez.Bicubic()"},
+		{CustomBicubic(0, 0.5), "bicubic(b=0, c=0.5)", "arez.Bicubic()"},
+		{CustomBicubic(1.0/3, 1.0/3), "bicubic(b=0.3333333333333333, c=0.3333333333333333)", "arez.CustomBicubic(0.3333333333333333, 0.3333333333333333)"},
+		{CustomBicubic(1, 0), "bicubic(b=1, c=0)", "arez.CustomBicubic(1, 0)"},
+		{Lanczos(3), "lanczos(a=3)", "arez.Lanczos(3)"},
+		{Lanczos(2.5), "lanczos(a=2.5)", "arez.Lanczos(2.5)"},
+	} {
+		expect(t, fmt.Sprint(tt.filter), tt.str)
+		expect(t, fmt.Sprintf("%#v", tt.filter), tt.gostr)
+		expect(t, filterString(tt.filter), tt.str)
+	}
+	expect(t, filterString(supportFilter{1}), "arez.supportFilter")
+	expect(t, filterString(&supportFilter{0.5}), "arez.supportFilter")
+	expect(t, filterString((*supportFilter)(nil)), "arez.supportFilter")
+}
+
 // TestFractionalSupport checks the kernel sizes of filters with a support
 // between whole pixels, which round up to whole taps on each side.
 func TestFractionalSupport(t *testing.T) {
@@ -52,7 +74,6 @@ func TestFractionalSupport(t *testing.T) {
 type constFilter struct{ weight float64 }
 
 func (constFilter) Support() float64      { return 1 }
-func (constFilter) Name() string          { return "const" }
 func (f constFilter) Get(float64) float64 { return f.weight }
 
 // spikeFilter gives a large weight to the nearest pixel and a nearly opposite
@@ -61,7 +82,6 @@ func (f constFilter) Get(float64) float64 { return f.weight }
 type spikeFilter struct{}
 
 func (spikeFilter) Support() float64 { return 1 }
-func (spikeFilter) Name() string     { return "spike" }
 func (spikeFilter) Get(x float64) float64 {
 	if x < 0.5 {
 		return 1000
@@ -75,7 +95,6 @@ func (spikeFilter) Get(x float64) float64 {
 type supportFilter struct{ support float64 }
 
 func (f supportFilter) Support() float64  { return f.support }
-func (supportFilter) Name() string        { return "support" }
 func (supportFilter) Get(float64) float64 { return 1 }
 
 // TestHugeSupport resizes with filters whose tap counts overflow int before
@@ -107,7 +126,6 @@ func TestHugeSupport(t *testing.T) {
 type panicFilter struct{ value string }
 
 func (panicFilter) Support() float64      { return 1 }
-func (panicFilter) Name() string          { return "panic" }
 func (f panicFilter) Get(float64) float64 { panic(f.value) }
 
 func TestPanics(t *testing.T) {
