@@ -52,8 +52,6 @@ for i := range input {
 
 You can also use `arez.NewResizer` to resize raw image data.
 
-<!-- TODO: add filter output comparison? -->
-
 ### Notes
 
 Paletted images and other image.Image implementations are not supported and need to be converted first (e.g., with [`image/draw`](https://pkg.go.dev/image/draw)).
@@ -65,3 +63,11 @@ By default, images are resized in parallel with `GOMAXPROCS` slices.
 Input rows are limited to MaxRowBytes bytes (8191 RGBA or 4095 RGBA64 pixels) and interlaced inputs need at least 2 rows per field in every plane (NewConverter returns an error otherwise).
 
 I used Claude Fable 5.1 to help port and verify parts of the SIMD code (it's a lot of tedious and mostly mechanical work), write the tests, and help find/test micro-optimizations, but the rest is mostly done by hand.
+
+### Filters
+
+<sub><b>Note:</b> The comparison should be viewed at full size (open the image in a new tab and zoom to 100%).</sub>
+
+[![filter comparison](https://raw.githubusercontent.com/pgaskin/arez/master/preview/compare.png)](https://raw.githubusercontent.com/pgaskin/arez/master/preview/compare.png)
+
+<!-- note: raw.githubusercontent.com directly so clicking opens the image itself, and so it renders properly in docs -->

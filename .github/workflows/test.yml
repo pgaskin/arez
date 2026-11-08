@@ -95,6 +95,22 @@ jobs:
           GOOS: js
           GOARCH: wasm
 
+  preview:
+    name: Preview
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: preview
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: preview/go.mod
+          cache-dependency-path: preview/go.sum
+      - run: go mod download
+      - run: go mod verify
+      - run: go run . && git add -N . && git diff --exit-code # ensure the preview images are up-to-date
+
   api:
     name: API
     runs-on: ubuntu-latest
