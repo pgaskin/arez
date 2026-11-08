@@ -26,6 +26,7 @@ New features:
   - Requires Go 1.27 or later.
   - Slightly faster on amd64.
   - Supports SIMD on arm64 and wasm.
+  - Supports nearest neighbour, box, and fractional lanczos filters.
   - Supports Alpha, CMYK, NYCbCrA, Gray16, Alpha16, RGBA64, and NRGBA64 images.
   - Supports premultiplying alpha for NRGBA, NRGBA64.
   - Supports rows larger than 32767 bytes (i.e., 8192 pixels RGBA).
