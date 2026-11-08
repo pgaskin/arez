@@ -16,8 +16,7 @@ import (
 func TestFilterSupport(t *testing.T) {
 	for _, f := range append(filters, Lanczos(4), Lanczos(2.5), CustomBicubic(1.0/3, 1.0/3)) {
 		support := f.Support()
-		// lanczos is sin(pi*alpha)*..., about 1e-33 rather than 0
-		expect(t, math.Abs(f.Get(support)) < 1e-9, true)
+		expect(t, f.Get(support), 0)
 		expect(t, math.Abs(f.Get(support-0.25)) > 1e-3, true)
 		for _, tt := range []struct{ input, output int }{{100, 200}, {100, 100}, {300, 100}, {250, 100}, {1920, 640}} {
 			k, err := makeKernel(&ResizerConfig{Input: tt.input, Output: tt.output, Pack: 1, Depth: 8}, f, 0)

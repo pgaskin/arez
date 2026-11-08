@@ -93,7 +93,7 @@ func (lanczos) Name() string {
 }
 
 func (f lanczos) Get(x float64) float64 {
-	if x > f.alpha {
+	if x >= f.alpha {
 		return 0
 	} else if x == 0 {
 		return 1
